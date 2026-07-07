@@ -6,6 +6,7 @@
   import { DEFAULT_CUT_FEED_RATE, MAX_CUT_FEED_RATE, MIN_CUT_FEED_RATE, clampCutFeedRate } from '$lib/cut-speed';
   import { DEFAULT_CUT_HEIGHT, MAX_CUT_HEIGHT, MIN_CUT_HEIGHT, clampCutHeight, DEFAULT_PIERCE_DELAY, DEFAULT_APPROACH_SPEED } from '$lib/cut-height';
   import { uiSettings } from '$lib/ui-settings';
+  import NumberPad from '$lib/NumberPad.svelte';
 
   const XY_DEFAULT_MAX = 100; // fallback mm slag in X en Y
   const CIRCLE_SEGMENTS = 64; // smooth genoeg
@@ -82,6 +83,12 @@
     console.error(msg);
   }
 
+  function normalizeHomedAxes(value: unknown) {
+    if (typeof value === 'string') return value.toLowerCase();
+    if (Array.isArray(value)) return value.join('').toLowerCase();
+    return '';
+  }
+
   function clamp(n: number, min: number, max: number) {
     if (Number.isNaN(n)) return min;
     return Math.min(max, Math.max(min, n));
@@ -138,7 +145,7 @@
       const toolhead = st.toolhead ?? {};
       const cfg = st.configfile?.settings ?? {};
 
-      homedAxes = toolhead.homed_axes ?? '';
+      homedAxes = normalizeHomedAxes(toolhead.homed_axes);
 
       const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
       const sy = cfg['carriage y'] ?? cfg['stepper_y'] ?? {};
@@ -1116,60 +1123,6 @@
     width: 100%;
   }
 
-  /* Numpad modal */
-  .modalBack {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.55);
-    display: grid;
-    place-items: center;
-    z-index: 999;
-    padding: 12px;
-  }
-
-  .modal {
-    width: min(100%, 400px);
-    background: #0f1522;
-    border: 1px solid #1e2a40;
-    border-radius: 20px;
-    padding: 14px;
-  }
-
-  .modalHead {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-  .modalTitle { font-weight: 950; font-size: 16px; }
-  .modalTitle { font-weight: 950; font-size: 17px; }
-  .modalValue {
-    font-size: 30px;
-    font-weight: 980;
-    background: #0b101b;
-    border: 1px solid #1e2a40;
-    border-radius: 16px;
-    padding: 10px 12px;
-    min-height: 58px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    text-align: right;
-    margin-bottom: 8px;
-  }
-
-  .pad {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-  }
-  .pad button {
-    padding: 16px 0;
-    font-size: 18px;
-    border-radius: 16px;
-  }
-  .pad .wide { grid-column: span 2; }
 
   @media (max-width: 760px) {
     .shapeGrid,
@@ -1553,51 +1506,15 @@
   </div>
 </div>
 
-{#if padOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div
-    class="modalBack"
-    role="button"
-    tabindex="0"
-    aria-label="Sluit keypad"
-    on:click|self={padCancel}
-    on:keydown={(event) => {
-      if (event.key === 'Enter' || event.key === ' ') padCancel();
-    }}
-  >
-    <div class="modal">
-      <div class="modalHead">
-        <div class="modalTitle">{padTitle}</div>
-        <button class="ghost" on:click={padCancel}>Sluiten</button>
-      </div>
-
-      <div class="modalValue">{padValue || '\u00A0'}</div>
-      <div class="submsg" style="margin-bottom: 12px;">Huidig: {fmt(padCurrent)} {padUnit} · Toegestaan: {fmtLimit(padMin)} – {fmtLimit(padMax)} {padUnit}</div>
-
-      {#if padError}
-        <div class="errorBox">{padError}</div>
-      {/if}
-
-      <div class="pad">
-        <button on:click={() => padAppend("1")}>1</button>
-        <button on:click={() => padAppend("2")}>2</button>
-        <button on:click={() => padAppend("3")}>3</button>
-
-        <button on:click={() => padAppend("4")}>4</button>
-        <button on:click={() => padAppend("5")}>5</button>
-        <button on:click={() => padAppend("6")}>6</button>
-
-        <button on:click={() => padAppend("7")}>7</button>
-        <button on:click={() => padAppend("8")}>8</button>
-        <button on:click={() => padAppend("9")}>9</button>
-
-        <button on:click={() => padAppend(".")}>.</button>
-        <button on:click={() => padAppend("0")}>0</button>
-        <button on:click={padBackspace}>⌫</button>
-
-        <button class="danger" on:click={padClear}>Clear</button>
-        <button class="wide primary" on:click={padOk}>Enter</button>
-      </div>
-    </div>
-  </div>
-{/if}
+<NumberPad
+  open={padOpen}
+  title={padTitle}
+  value={padValue}
+  subtitle={`Huidig: ${fmt(padCurrent)} ${padUnit} · Toegestaan: ${fmtLimit(padMin)} – ${fmtLimit(padMax)} ${padUnit}`}
+  error={padError}
+  onClose={padCancel}
+  onAppend={padAppend}
+  onBackspace={padBackspace}
+  onClear={padClear}
+  onConfirm={padOk}
+/>

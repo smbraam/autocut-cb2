@@ -4,6 +4,7 @@
   import { emergencyStopState } from '$lib/emergency-stop-state';
   import { machineApi } from '$lib/machine-api';
   import { uiSettings } from '$lib/ui-settings';
+  import NumberPad from '$lib/NumberPad.svelte';
 
   /**
   * Manual jog via Moonraker proxy
@@ -49,6 +50,20 @@
   let endstopIndicators = { x: false, y: false, z: false };
   let endstopReleaseDelayMs = 500;
   let endstopFadeTimers: Record<string, ReturnType<typeof setTimeout> | null> = { x: null, y: null, z: null };
+
+
+  function normalizeHomedAxes(value: unknown) {
+    if (typeof value === 'string') return value.toLowerCase().split('');
+    if (Array.isArray(value)) return value.join('').toLowerCase().split('');
+    return [];
+  }
+
+  function normalizePosition(value: unknown): [number, number, number] | null {
+    if (!Array.isArray(value) || value.length < 3) return null;
+    const next = value.slice(0, 3).map((item) => Number(item));
+    if (!next.every(Number.isFinite)) return null;
+    return next as [number, number, number];
+  }
 
   function axisIndex(axis: "X" | "Y" | "Z") {
     return axis === "X" ? 0 : axis === "Y" ? 1 : 2;
@@ -136,6 +151,7 @@
       const q = await machineApi.getStatus(true);
       const status = q?.result?.status ?? {};
       const toolhead = status.toolhead ?? {};
+      const gcodeMove = status.gcode_move ?? {};
       const cfg = status.configfile?.settings ?? {};
       const printState = status.print_stats?.state ?? '';
       const webhookState = status.webhooks?.state ?? '';
@@ -155,14 +171,10 @@
       }
 
       // position
-      const p = toolhead.position;
-      if (Array.isArray(p) && p.length >= 3) {
-        pos = [Number(p[0]) || 0, Number(p[1]) || 0, Number(p[2]) || 0];
-      }
+      pos = normalizePosition(toolhead.position) ?? normalizePosition(gcodeMove.gcode_position) ?? pos;
 
       // homed axes
-      const ha = toolhead.homed_axes ?? "";
-      homedAxes = typeof ha === "string" ? ha.split("") : [];
+      homedAxes = normalizeHomedAxes(toolhead.homed_axes);
 
       // read limits from config
       const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
@@ -566,7 +578,7 @@
   .card {
     background: linear-gradient(180deg, rgba(11, 19, 35, 0.98), rgba(7, 14, 26, 0.98));
     border: 1px solid rgba(109, 146, 219, 0.16);
-    border-radius: 22px;
+    border-radius: 18px;
     padding: 16px;
     box-shadow: 0 18px 28px rgba(0, 0, 0, 0.16);
   }
@@ -598,9 +610,9 @@
 
   .jogGrid {
     display: grid;
-    grid-template-columns: 304px 96px 156px minmax(360px, 1fr);
+    grid-template-columns: 304px 96px 92px 160px;
     gap: 12px;
-    align-items: start;
+    align-items: stretch;
     margin-top: 12px;
   }
 
@@ -728,6 +740,7 @@
     justify-items: start;
     align-content: center;
     min-height: 72px;
+    padding: 10px 12px;
   }
 
   .stepLabel {
@@ -773,7 +786,7 @@
 
   .stepVal {
     font-weight: 950;
-    font-size: 26px;
+    font-size: 22px;
   }
   .unit {
     opacity: 0.75;
@@ -794,67 +807,6 @@
     max-height: 120px;
     overflow: auto;
   }
-
-  /* Modal */
-  .modalBack {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.55);
-    display: grid;
-    place-items: center;
-    z-index: 999;
-    padding: 12px;
-  }
-
-  .modal {
-    width: min(100%, 400px);
-    background: #0f1522;
-    border: 1px solid #1e2a40;
-    border-radius: 20px;
-    padding: 14px;
-  }
-
-  .modalHead {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-
-  .modalTitle {
-    font-weight: 950;
-    font-size: 17px;
-  }
-
-  .modalValue {
-    font-size: 30px;
-    font-weight: 980;
-    background: #0b101b;
-    border: 1px solid #1e2a40;
-    border-radius: 16px;
-    padding: 10px 12px;
-    min-height: 58px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    text-align: right;
-    margin-bottom: 8px;
-  }
-
-  .pad {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-  }
-
-  .pad button {
-    padding: 16px 0;
-    font-size: 19px;
-    border-radius: 16px;
-  }
-
-  .pad .wide { grid-column: span 2; }
 
   .devCard {
     background: linear-gradient(180deg, rgba(19, 15, 31, 0.98), rgba(10, 10, 21, 0.98));
@@ -892,8 +844,6 @@
 
   .torchColumn {
     display: grid;
-    grid-template-columns: minmax(150px, 1fr) minmax(156px, 1fr);
-    gap: 10px;
     align-content: stretch;
     min-height: 100%;
   }
@@ -951,7 +901,9 @@
   }
 
   .positionStack {
+    grid-column: 1 / -1;
     display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
     align-content: stretch;
   }
@@ -991,7 +943,8 @@
     .macroGrid,
     .stepRow,
     .stepStack,
-    .torchColumn {
+    .torchColumn,
+    .positionStack {
       grid-template-columns: 1fr;
     }
 
@@ -1087,30 +1040,31 @@
           </button>
         </div>
 
-          <div class="torchColumn">
-            <button 
-              class={torchActive ? 'torchButton active' : 'torchButton'}
-              disabled={!connected}
-              on:mousedown={torchPress}
-              on:mouseup={torchRelease}
-              on:mouseleave={torchRelease}
-              on:touchstart|preventDefault={torchPress}
-              on:touchend|preventDefault={torchRelease}
-              on:touchcancel|preventDefault={torchRelease}
-              aria-label="Toorts bekrachtigen"
-            >
-              <svg viewBox="0 0 24 24" width="32" height="32">
-                <path d="M8.5 14.5L4 19l1.5 1.5L10 16" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M12 6l-3 3 3 3 3-3-3-3z" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M12 3v3" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round"/>
-                <path d="M16 10l3-3" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round"/>
-                <path d="M19 13l1.5-1.5" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round"/>
-              </svg>
-              <span>{torchActive ? 'AAN' : 'Toorts'}</span>
-              <small>Ingedrukt houden</small>
-            </button>
+        <div class="torchColumn">
+          <button 
+            class={torchActive ? 'torchButton active' : 'torchButton'}
+            disabled={!connected}
+            on:mousedown={torchPress}
+            on:mouseup={torchRelease}
+            on:mouseleave={torchRelease}
+            on:touchstart|preventDefault={torchPress}
+            on:touchend|preventDefault={torchRelease}
+            on:touchcancel|preventDefault={torchRelease}
+            aria-label="Toorts bekrachtigen"
+          >
+            <svg viewBox="0 0 24 24" width="32" height="32">
+              <path d="M8.5 14.5L4 19l1.5 1.5L10 16" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M12 6l-3 3 3 3 3-3-3-3z" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M12 3v3" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round"/>
+              <path d="M16 10l3-3" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round"/>
+              <path d="M19 13l1.5-1.5" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <span>{torchActive ? 'AAN' : 'Toorts'}</span>
+            <small>Ingedrukt houden</small>
+          </button>
+        </div>
 
-            <div class="positionStack">
+        <div class="positionStack">
               <div class="positionBox">
                 <div class="positionBoxHead">
                   <span class="stepLabel">X</span>
@@ -1141,8 +1095,7 @@
                   <div class="positionUnit">mm</div>
                 </div>
               </div>
-            </div>
-          </div>
+        </div>
       </div>
 
       {#if lastError}
@@ -1168,51 +1121,15 @@
   </div>
 </div>
 
-{#if keypadOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div
-    class="modalBack"
-    role="button"
-    tabindex="0"
-    aria-label="Sluit keypad"
-    on:click|self={closeKeypad}
-    on:keydown={(event) => {
-      if (event.key === 'Enter' || event.key === ' ') closeKeypad();
-    }}
-  >
-    <div class="modal">
-      <div class="modalHead">
-        <div class="modalTitle">{keypadTitle}</div>
-        <button class="ghost" on:click={closeKeypad}>Sluiten</button>
-      </div>
-
-      <div class="modalValue">{keypadValue || '\u00A0'}</div>
-      <div class="submsg" style="margin-bottom: 12px;">Huidig: {toFixedNice(keypadCurrent)} mm · Toegestaan: {toFixedNice(keypadMin)} – {toFixedNice(keypadMax)} mm</div>
-
-      {#if keypadError}
-        <div class="errorBox">{keypadError}</div>
-      {/if}
-
-      <div class="pad">
-        <button on:click={() => appendKey("1")}>1</button>
-        <button on:click={() => appendKey("2")}>2</button>
-        <button on:click={() => appendKey("3")}>3</button>
-
-        <button on:click={() => appendKey("4")}>4</button>
-        <button on:click={() => appendKey("5")}>5</button>
-        <button on:click={() => appendKey("6")}>6</button>
-
-        <button on:click={() => appendKey("7")}>7</button>
-        <button on:click={() => appendKey("8")}>8</button>
-        <button on:click={() => appendKey("9")}>9</button>
-
-        <button on:click={() => appendKey(".")}>.</button>
-        <button on:click={() => appendKey("0")}>0</button>
-        <button on:click={backspaceKey}>⌫</button>
-
-        <button class="danger" on:click={clearKey}>Clear</button>
-        <button class="wide primary" on:click={confirmKeypad}>Enter</button>
-      </div>
-    </div>
-  </div>
-{/if}
+<NumberPad
+  open={keypadOpen}
+  title={keypadTitle}
+  value={keypadValue}
+  subtitle={`Huidig: ${toFixedNice(keypadCurrent)} mm · Toegestaan: ${toFixedNice(keypadMin)} – ${toFixedNice(keypadMax)} mm`}
+  error={keypadError}
+  onClose={closeKeypad}
+  onAppend={appendKey}
+  onBackspace={backspaceKey}
+  onClear={clearKey}
+  onConfirm={confirmKeypad}
+/>

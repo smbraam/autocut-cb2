@@ -5,6 +5,7 @@
 	import { DEFAULT_CUT_FEED_RATE, MAX_CUT_FEED_RATE, MIN_CUT_FEED_RATE, clampCutFeedRate } from '$lib/cut-speed';
 	import { DEFAULT_CUT_HEIGHT, MAX_CUT_HEIGHT, MIN_CUT_HEIGHT, clampCutHeight } from '$lib/cut-height';
 	import { machineApi } from '$lib/machine-api';
+  import NumberPad from '$lib/NumberPad.svelte';
 
 	const DXF_FEED_RATE_STORAGE_KEY = 'autocut-dxf-cut-feed-rate';
 	const DXF_CUT_HEIGHT_STORAGE_KEY = 'autocut-dxf-cut-height';
@@ -486,66 +487,6 @@
 		color: #f0f6ff;
 	}
 
-	.modalBack {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.55);
-		display: grid;
-		place-items: center;
-		z-index: 999;
-		padding: 12px;
-	}
-
-	.modal {
-		width: min(100%, 400px);
-		background: #0f1522;
-		border: 1px solid #1e2a40;
-		border-radius: 20px;
-		padding: 14px;
-	}
-
-	.modalHead {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
-		margin-bottom: 8px;
-	}
-
-	.modalTitle {
-		font-weight: 950;
-		font-size: 17px;
-	}
-
-	.modalValue {
-		font-size: 30px;
-		font-weight: 980;
-		background: #0b101b;
-		border: 1px solid #1e2a40;
-		border-radius: 16px;
-		padding: 10px 12px;
-		min-height: 58px;
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		text-align: right;
-		margin-bottom: 8px;
-	}
-
-	.pad {
-		display: grid;
-		grid-template-columns: repeat(3, 1fr);
-		gap: 8px;
-	}
-
-	.pad button {
-		padding: 16px 0;
-		font-size: 19px;
-		border-radius: 16px;
-	}
-
-	.pad .wide { grid-column: span 2; }
-
 	.ghost { background: transparent; }
 	.danger { background: #2a0f14; border-color: #7a1f1f; color: #ffb5b5; }
 
@@ -649,100 +590,28 @@
 	</section>
 </div>
 
-{#if speedPadOpen}
-	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div
-		class="modalBack"
-		role="button"
-		tabindex="0"
-		aria-label="Sluit keypad"
-		on:click|self={closeSpeedPad}
-		on:keydown={(event) => {
-			if (event.key === 'Enter' || event.key === ' ') closeSpeedPad();
-		}}
-	>
-		<div class="modal">
-			<div class="modalHead">
-				<div class="modalTitle">Snijsnelheid (mm/min)</div>
-				<button class="ghost" on:click={closeSpeedPad}>Sluiten</button>
-			</div>
+<NumberPad
+	open={speedPadOpen}
+	title="Snijsnelheid (mm/min)"
+	value={speedPadValue}
+	subtitle={`Huidig: ${cutFeedRate} mm/min · Toegestaan: ${MIN_CUT_FEED_RATE} – ${MAX_CUT_FEED_RATE} mm/min`}
+	error={speedPadError}
+	onClose={closeSpeedPad}
+	onAppend={speedPadAppend}
+	onBackspace={speedPadBackspace}
+	onClear={speedPadClear}
+	onConfirm={confirmSpeedPad}
+/>
 
-			<div class="modalValue">{speedPadValue || '\u00A0'}</div>
-			<div class="muted" style="margin-bottom: 12px;">Huidig: {cutFeedRate} mm/min · Toegestaan: {MIN_CUT_FEED_RATE} – {MAX_CUT_FEED_RATE} mm/min</div>
-
-			{#if speedPadError}
-				<div class="errorBox">{speedPadError}</div>
-			{/if}
-
-			<div class="pad">
-				<button on:click={() => speedPadAppend('1')}>1</button>
-				<button on:click={() => speedPadAppend('2')}>2</button>
-				<button on:click={() => speedPadAppend('3')}>3</button>
-
-				<button on:click={() => speedPadAppend('4')}>4</button>
-				<button on:click={() => speedPadAppend('5')}>5</button>
-				<button on:click={() => speedPadAppend('6')}>6</button>
-
-				<button on:click={() => speedPadAppend('7')}>7</button>
-				<button on:click={() => speedPadAppend('8')}>8</button>
-				<button on:click={() => speedPadAppend('9')}>9</button>
-
-				<button on:click={() => speedPadAppend('.')}>.</button>
-				<button on:click={() => speedPadAppend('0')}>0</button>
-				<button on:click={speedPadBackspace}>⌫</button>
-
-				<button class="danger" on:click={speedPadClear}>Clear</button>
-				<button class="wide primary" on:click={confirmSpeedPad}>Enter</button>
-			</div>
-		</div>
-	</div>
-{/if}
-
-{#if heightPadOpen}
-	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div
-		class="modalBack"
-		role="button"
-		tabindex="0"
-		aria-label="Sluit keypad"
-		on:click|self={closeHeightPad}
-		on:keydown={(event) => {
-			if (event.key === 'Enter' || event.key === ' ') closeHeightPad();
-		}}
-	>
-		<div class="modal">
-			<div class="modalHead">
-				<div class="modalTitle">Snijhoogte (mm)</div>
-				<button class="ghost" on:click={closeHeightPad}>Sluiten</button>
-			</div>
-
-			<div class="modalValue">{heightPadValue || '\u00A0'}</div>
-			<div class="muted" style="margin-bottom: 12px;">Huidig: {cutHeight.toFixed(1)} mm · Toegestaan: {MIN_CUT_HEIGHT} – {MAX_CUT_HEIGHT} mm</div>
-
-			{#if heightPadError}
-				<div class="errorBox">{heightPadError}</div>
-			{/if}
-
-			<div class="pad">
-				<button on:click={() => heightPadAppend('1')}>1</button>
-				<button on:click={() => heightPadAppend('2')}>2</button>
-				<button on:click={() => heightPadAppend('3')}>3</button>
-
-				<button on:click={() => heightPadAppend('4')}>4</button>
-				<button on:click={() => heightPadAppend('5')}>5</button>
-				<button on:click={() => heightPadAppend('6')}>6</button>
-
-				<button on:click={() => heightPadAppend('7')}>7</button>
-				<button on:click={() => heightPadAppend('8')}>8</button>
-				<button on:click={() => heightPadAppend('9')}>9</button>
-
-				<button on:click={() => heightPadAppend('.')}>.</button>
-				<button on:click={() => heightPadAppend('0')}>0</button>
-				<button on:click={heightPadBackspace}>⌫</button>
-
-				<button class="danger" on:click={heightPadClear}>Clear</button>
-				<button class="wide primary" on:click={confirmHeightPad}>Enter</button>
-			</div>
-		</div>
-	</div>
-{/if}
+<NumberPad
+	open={heightPadOpen}
+	title="Snijhoogte (mm)"
+	value={heightPadValue}
+	subtitle={`Huidig: ${cutHeight.toFixed(1)} mm · Toegestaan: ${MIN_CUT_HEIGHT} – ${MAX_CUT_HEIGHT} mm`}
+	error={heightPadError}
+	onClose={closeHeightPad}
+	onAppend={heightPadAppend}
+	onBackspace={heightPadBackspace}
+	onClear={heightPadClear}
+	onConfirm={confirmHeightPad}
+/>

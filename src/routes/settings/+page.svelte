@@ -2,10 +2,18 @@
 	import { get } from 'svelte/store';
 	import { onMount } from 'svelte';
 	import { defaultUiSettings, type UiSettings, uiSettings } from '$lib/ui-settings';
+	import NumberPad from '$lib/NumberPad.svelte';
 
 	let settings: UiSettings = defaultUiSettings;
+	let padOpen = false;
+	let padTitle = '';
+	let padValue = '';
+	let padSubtitle = '';
+	let padError = '';
+	let padApply: ((value: number) => void) | null = null;
 
-	function toggle(key: 'developerMode' | 'showInstructions') {
+
+	function toggle(key: 'developerMode') {
 		uiSettings.patch({ [key]: !settings[key] } as Partial<UiSettings>);
 	}
 
@@ -24,6 +32,61 @@
 		uiSettings.patch({ endstopReleaseDelayMs });
 	}
 
+	function formatNice(value: number) {
+		const rounded = Math.round(value * 10) / 10;
+		return rounded.toFixed(1).replace(/\.0$/, '');
+	}
+
+	function openNumberPad(opts: { title: string; subtitle: string; apply: (value: number) => void }) {
+		padTitle = opts.title;
+		padSubtitle = opts.subtitle;
+		padValue = '';
+		padError = '';
+		padApply = opts.apply;
+		padOpen = true;
+	}
+
+	function closeNumberPad() {
+		padOpen = false;
+		padError = '';
+		padApply = null;
+	}
+
+	function appendPad(ch: string) {
+		if (ch === '.' && padValue.includes('.')) return;
+		if (padValue === '' && ch === '.') {
+			padValue = '0.';
+			return;
+		}
+
+		padValue += ch;
+	}
+
+	function backspacePad() {
+		padValue = padValue.slice(0, -1);
+	}
+
+	function clearPad() {
+		padValue = '';
+	}
+
+	function confirmPad() {
+		const raw = padValue.replace(',', '.').trim();
+		if (!raw) {
+			padError = 'Voer eerst een waarde in.';
+			return;
+		}
+
+		const value = Number(raw);
+		if (!Number.isFinite(value)) {
+			padError = 'Voer een geldig getal in.';
+			return;
+		}
+
+		padApply?.(value);
+		closeNumberPad();
+	}
+
 	onMount(() => {
 		uiSettings.load();
 		settings = get(uiSettings);
@@ -36,18 +99,18 @@
 <style>
 	.page {
 		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
+		grid-template-columns: 1fr;
 		gap: 12px;
 	}
 
 	.pageHeader {
 		grid-column: 1 / -1;
 		display: flex;
-		align-items: flex-start;
+		align-items: center;
 		justify-content: space-between;
 		gap: 12px;
 		padding: 14px 16px;
-		min-height: 96px;
+		min-height: 72px;
 		border-radius: 22px;
 		background:
 			radial-gradient(circle at top right, rgba(124, 199, 255, 0.14), transparent 34%),
@@ -69,38 +132,22 @@
 		line-height: 1.4;
 	}
 
-	.card {
-		background: linear-gradient(180deg, rgba(11, 19, 35, 0.98), rgba(7, 14, 26, 0.98));
-		border: 1px solid rgba(109, 146, 219, 0.16);
-		border-radius: 22px;
-		padding: 16px;
-		box-shadow: 0 18px 28px rgba(0, 0, 0, 0.16);
-	}
-
-	.full {
-		grid-column: 1 / -1;
-	}
-
-	h1, h2 {
-		margin: 0 0 10px;
-	}
-
-	h2 {
-		font-size: 22px;
+	h1 {
+		margin: 0;
 	}
 
 	.settingList {
 		display: grid;
 		gap: 10px;
-		margin-top: 14px;
+		grid-column: 1 / -1;
 	}
 
 	.settingItem {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 12px;
-		padding: 14px;
+		gap: 16px;
+		padding: 16px 20px;
 		border-radius: 18px;
 		background: rgba(13, 24, 43, 0.84);
 		border: 1px solid rgba(124, 199, 255, 0.12);
@@ -147,7 +194,7 @@
 		transform: translateX(24px);
 	}
 
-	.numberInput {
+	.numberButton {
 		width: 120px;
 		min-height: 48px;
 		border-radius: 14px;
@@ -157,6 +204,19 @@
 		font-size: 20px;
 		font-weight: 900;
 		padding: 8px 10px;
+		cursor: pointer;
+	}
+
+
+
+	.inputWithUnit {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font-size: 18px;
+		font-weight: 900;
+		color: #8fa3c7;
+		flex: 0 0 auto;
 	}
 
 	@media (max-width: 760px) {
@@ -173,9 +233,7 @@
 		</div>
 	</section>
 
-	<section class="card">
-		<h2>Gedrag</h2>
-		<div class="settingList">
+	<section class="settingList">
 			<div class="settingItem">
 				<div>
 					<strong>Ontwikkelmodus</strong>
@@ -191,33 +249,60 @@
 				</div>
 				<button class={`toggle ${settings.autoScroll ? 'active' : ''}`} aria-label="Toggle autoscroll" on:click={() => uiSettings.patch({ autoScroll: !settings.autoScroll })}></button>
 			</div>
-
 			<div class="settingItem">
 				<div>
-					<strong>Bedieningsinstructies</strong>
-					<div class="muted">Toon bedieningsinstructies bij het starten van de applicatie.</div>
+					<strong>Reishoogte Z</strong>
+					<div class="muted">Hoogte waar Z na homen automatisch naartoe gaat.</div>
 				</div>
-				<button class={`toggle ${settings.showInstructions ? 'active' : ''}`} aria-label="Toggle bedieningsinstructies" on:click={() => toggle('showInstructions')}></button>
+				<div class="inputWithUnit">
+					<button
+						class="numberButton"
+						type="button"
+						on:click={() => openNumberPad({
+							title: 'Reishoogte Z (mm)',
+							subtitle: `Huidig: ${formatNice(settings.travelHeightMm)} mm · Toegestaan: 0.1 – 100 mm`,
+							apply: setTravelHeight
+						})}
+					>
+						{formatNice(settings.travelHeightMm)}
+					</button>
+					<span>mm</span>
+				</div>
 			</div>
-
 
 			<div class="settingItem">
 				<div>
 					<strong>Afvalvertraging eindstop</strong>
 					<div class="muted">Tijd dat het eindstoplampje zichtbaar blijft na triggeren.</div>
 				</div>
-				<input
-					class="numberInput"
-					type="number"
-					min="0"
-					max="10"
-					step="0.1"
-					value={settings.endstopReleaseDelayMs / 1000}
-					on:change={(event) => setEndstopReleaseDelay(Number(event.currentTarget.value))}
-					aria-label="Afvalvertraging eindstop in seconden"
-				/>
+				<div class="inputWithUnit">
+					<button
+						class="numberButton"
+						type="button"
+						on:click={() => openNumberPad({
+							title: 'Afvalvertraging eindstop (s)',
+							subtitle: `Huidig: ${formatNice(settings.endstopReleaseDelayMs / 1000)} s · Toegestaan: 0 – 10 s`,
+							apply: setEndstopReleaseDelay
+						})}
+					>
+						{formatNice(settings.endstopReleaseDelayMs / 1000)}
+					</button>
+					<span>s</span>
+				</div>
 			</div>
-		</div>
 	</section>
 
 </div>
+
+<NumberPad
+	open={padOpen}
+	title={padTitle}
+	value={padValue}
+	subtitle={padSubtitle}
+	error={padError}
+	onClose={closeNumberPad}
+	onAppend={appendPad}
+	onBackspace={backspacePad}
+	onClear={clearPad}
+	onConfirm={confirmPad}
+/>

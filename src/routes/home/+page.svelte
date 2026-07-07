@@ -32,6 +32,19 @@
     console.error(msg);
   }
 
+  function normalizeHomedAxes(value: unknown) {
+    if (typeof value === 'string') return value.toLowerCase();
+    if (Array.isArray(value)) return value.join('').toLowerCase();
+    return '';
+  }
+
+  function normalizePosition(value: unknown): [number, number, number] | null {
+    if (!Array.isArray(value) || value.length < 3) return null;
+    const next = value.slice(0, 3).map((item) => Number(item));
+    if (!next.every(Number.isFinite)) return null;
+    return next as [number, number, number];
+  }
+
   function isAxisHomed(axis: 'X' | 'Y' | 'Z') {
     return homedAxes.includes(axis.toLowerCase());
   }
@@ -122,16 +135,11 @@
       const wh = st.webhooks?.state ?? '';
       const message = st.display_status?.message ?? st.webhooks?.state_message ?? st.print_stats?.message ?? '';
       const toolhead = st.toolhead ?? {};
+      const gcodeMove = st.gcode_move ?? {};
       const cfg = st.configfile?.settings ?? {};
 
-      homedAxes = toolhead.homed_axes ?? '';
-      if (Array.isArray(toolhead.position) && toolhead.position.length >= 3) {
-        position = [
-          Number(toolhead.position[0]) || 0,
-          Number(toolhead.position[1]) || 0,
-          Number(toolhead.position[2]) || 0
-        ];
-      }
+      homedAxes = normalizeHomedAxes(toolhead.homed_axes);
+      position = normalizePosition(toolhead.position) ?? normalizePosition(gcodeMove.gcode_position) ?? position;
 
       const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
       const sy = cfg['carriage y'] ?? cfg['stepper_y'] ?? {};
@@ -306,7 +314,7 @@
 <style>
   .page {
     display: grid;
-    gap: 14px;
+    gap: 10px;
   }
 
   .topStopButton {
@@ -329,15 +337,16 @@
   .homeRow {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 14px;
+    gap: 10px;
     min-height: 0;
+    margin-top: 10px;
   }
 
   .card {
     background: linear-gradient(180deg, rgba(11, 19, 35, 0.98), rgba(7, 14, 26, 0.98));
     border: 1px solid rgba(109, 146, 219, 0.16);
     border-radius: 22px;
-    padding: 16px;
+    padding: 12px;
     box-shadow: 0 18px 28px rgba(0, 0, 0, 0.16);
     min-height: 0;
   }
@@ -359,7 +368,7 @@
 
   .statusCard {
     display: grid;
-    gap: 12px;
+    gap: 10px;
   }
 
   .statusHeader {
@@ -383,7 +392,7 @@
 
   .positionWrap {
     display: grid;
-    gap: 12px;
+    gap: 0;
   }
 
   .positionHeader {
@@ -413,6 +422,12 @@
     border-radius: 18px;
     background: rgba(11, 22, 39, 0.86);
     border: 1px solid rgba(124, 199, 255, 0.12);
+  }
+
+  .homeCard {
+    padding: 0;
+    background: transparent;
+    border: 0;
   }
 
   .positionCardHead {
@@ -634,12 +649,6 @@
   </section>
 
   <section class="card positionWrap">
-    <div class="positionHeader">
-      <div class="positionMeta">
-        <div class="cardTitle">Positie</div>
-      </div>
-    </div>
-
     <div class="positionGrid">
       <div class="positionCard">
         <div class="positionCardHead">
@@ -673,37 +682,27 @@
       </div>
     </div>
 
-  </section>
-
-  <section class="homeRow">
-    <div class="homeCard">
-      <div class="homeCardHead">
-        <div class="cardTitle">Home X</div>
+    <div class="homeRow">
+      <div class="homeCard">
+        <button class="homeButton" on:click={() => homeAxis('X')}>
+          <span class="label">Home X</span>
+          <span class="sub">Alleen X-as</span>
+        </button>
       </div>
-      <button class="homeButton" on:click={() => homeAxis('X')}>
-        <span class="label">Home X</span>
-        <span class="sub">Alleen X-as</span>
-      </button>
-    </div>
 
-    <div class="homeCard">
-      <div class="homeCardHead">
-        <div class="cardTitle">Home Y</div>
+      <div class="homeCard">
+        <button class="homeButton" on:click={() => homeAxis('Y')}>
+          <span class="label">Home Y</span>
+          <span class="sub">Alleen Y-as</span>
+        </button>
       </div>
-      <button class="homeButton" on:click={() => homeAxis('Y')}>
-        <span class="label">Home Y</span>
-        <span class="sub">Alleen Y-as</span>
-      </button>
-    </div>
 
-    <div class="homeCard">
-      <div class="homeCardHead">
-        <div class="cardTitle">Home Z</div>
+      <div class="homeCard">
+        <button class="homeButton" on:click={() => homeAxis('Z')}>
+          <span class="label">Home Z</span>
+          <span class="sub">Vlak oppervlak vereist</span>
+        </button>
       </div>
-      <button class="homeButton" on:click={() => homeAxis('Z')}>
-        <span class="label">Home Z</span>
-        <span class="sub">Vlak oppervlak vereist</span>
-      </button>
     </div>
   </section>
 </div>

@@ -13,19 +13,10 @@
     { href: '/settings', label: 'Instellingen', icon: 'settings' }
   ];
 
-  let showInstructionsModal = false;
-
   function isActive(pathname: string, href: string) {
     return pathname === href || pathname.startsWith(href + '/');
   }
 
-  function openInstructionsHelp() {
-    showInstructionsModal = true;
-  }
-
-  function closeInstructionsModal() {
-    showInstructionsModal = false;
-  }
 
   onMount(() => {
     emergencyStopState.load();
@@ -128,32 +119,6 @@
     align-items: center;
     justify-content: center;
     padding: 0;
-  }
-
-  .helpButton {
-    width: 72px;
-    height: 72px;
-    border-radius: 20px;
-    display: grid;
-    place-items: center;
-    border: 1px solid rgba(124, 199, 255, 0.12);
-    background: linear-gradient(180deg, rgba(26, 46, 80, 0.72), rgba(18, 33, 60, 0.72));
-    color: var(--text-medium);
-    cursor: pointer;
-    transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
-    flex-shrink: 0;
-  }
-
-  .helpButton:hover {
-    background: linear-gradient(180deg, rgba(33, 58, 100, 0.96), rgba(21, 39, 71, 0.96));
-    border-color: rgba(124, 199, 255, 0.24);
-    color: var(--text-strong);
-    transform: translateY(-1px);
-  }
-
-  .helpButton:focus {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
   }
 
   a.item {
@@ -386,61 +351,6 @@
     font-size: var(--font-size-sm);
   }
 
-  .modalBack {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.58);
-    display: grid;
-    place-items: center;
-    padding: 12px;
-    z-index: 999;
-  }
-
-  .modal {
-    width: min(100%, 600px);
-    background: linear-gradient(180deg, rgba(11, 19, 35, 0.98), rgba(7, 14, 26, 0.98));
-    border: 1px solid rgba(109, 146, 219, 0.18);
-    border-radius: 22px;
-    padding: 18px;
-    box-shadow: 0 24px 36px rgba(0, 0, 0, 0.28);
-  }
-
-  .modalTitle {
-    margin: 0 0 10px;
-    font-size: 22px;
-    font-weight: 900;
-  }
-
-  .modalText {
-    color: #c9d8ee;
-    font-size: 17px;
-    line-height: 1.5;
-  }
-
-  .safetyText {
-    white-space: normal;
-  }
-
-  .safetyText p {
-    margin: 0 0 12px;
-  }
-
-  .safetyText ul {
-    margin: 8px 0 12px;
-    padding-left: 24px;
-  }
-
-  .safetyText li {
-    margin-bottom: 6px;
-  }
-
-  .modalActions {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 10px;
-    margin-top: 16px;
-  }
-
   @media (max-width: 900px) {
     .layout {
       grid-template-columns: 84px 1fr;
@@ -451,13 +361,6 @@
       height: 68px;
       border-radius: 18px;
     }
-
-    .helpButton {
-      width: 68px;
-      height: 68px;
-      border-radius: 18px;
-    }
-
     .icon {
       width: 28px;
       height: 28px;
@@ -530,21 +433,7 @@
           {/if}
         </a>
       {/each}
-    </nav>
-
-    <button 
-      class="helpButton" 
-      on:click={openInstructionsHelp}
-      aria-label="Bedieningsinstructies"
-      title="Bedieningsinstructies"
-    >
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-        <circle class="stroke" cx="12" cy="12" r="9" />
-        <path class="stroke" d="M9.5 9C9.5 7.067 10.567 6 12.5 6s3 1.067 3 3-1.067 3-3 3v2" stroke-linecap="round" />
-        <circle class="stroke" cx="12.5" cy="18" r="0.5" fill="currentColor" />
-      </svg>
-    </button>
-  </aside>
+    </nav>  </aside>
 
   <section class="main">
     <main class="content">
@@ -552,42 +441,3 @@
     </main>
   </section>
 </div>
-
-{#if showInstructionsModal}
-  <div class="modalBack">
-    <div class="modal" role="dialog" aria-modal="true">
-      <h2 class="modalTitle">Bedieningsinstructies</h2>
-      <div class="modalText safetyText">
-        <p><strong>Welkom bij AutoCut - Plasma snijsysteem</strong></p>
-        
-        <p><strong>Basis bediening:</strong></p>
-        <ul>
-          <li><strong>Home:</strong> Home de machine volledig (x-, y- en z-as) voordat u gaat snijden.</li>
-          <li><strong>Handbediening:</strong> Verplaats de toorts handmatig met de +/- knoppen per as. Stel de stapgrootte in door op de mm-waarde te tikken.</li>
-          <li><strong>Vorm snijden:</strong> Kies een vorm (cirkel, rechthoek, sleuf, zeskant), stel de afmetingen in, en laat de machine automatisch snijden.</li>
-          <li><strong>DXF snijden:</strong> Upload een DXF-bestand en snijd complexe vormen.</li>
-        </ul>
-        
-        <p><strong>Snijproces:</strong></p>
-        <ul>
-          <li>De toorts voert automatisch een contactstart uit: beweegt naar beneden tot materiaal raakt, gaat omhoog naar snijhoogte, en start snijden</li>
-          <li>Stel snijsnelheid en snijhoogte in voordat u start</li>
-          <li>De toorts activeert alleen tijdens het snijden</li>
-        </ul>
-        
-        <p><strong>Veiligheid:</strong></p>
-        <ul>
-          <li>Gebruik de <strong>Emergency Stop</strong> knop (rood, rechtsboven) bij gevaar</li>
-          <li>Houd handen vrij van bewegende delen tijdens homing en snijden</li>
-          <li>Zorg dat de werkruimte vrij is voordat u start</li>
-        </ul>
-        
-        <p><strong>DIAG Lampjes:</strong> De groene lampjes bij X/Y/Z tonen wanneer de eindstop is bereikt (grijs = vrij, groen = eindstop).</p>
-      </div>
-      
-      <div class="modalActions">
-        <button class="primary" on:click={closeInstructionsModal}>Sluiten</button>
-      </div>
-    </div>
-  </div>
-{/if}

@@ -1,0 +1,18 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+	sshCommand = ssh -F /home/biqu/.ssh/config -o UserKnownHostsFile=/home/biqu/.ssh/known_hosts
+[remote "origin"]
+	url = git@github.com:smbraam/autocut-cb2.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+[branch "backup/pre-rollback-dc50a80-20260521-2047"]
+	remote = origin
+	merge = refs/heads/backup/pre-rollback-dc50a80-20260521-2047
+[user]
+	name = smbraam
+	email = smbraam@users.noreply.github.com

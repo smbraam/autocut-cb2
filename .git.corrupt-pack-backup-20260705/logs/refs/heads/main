@@ -1,0 +1,18 @@
+0000000000000000000000000000000000000000 f4dc79866a0e4c2029f745722e7a6b124dd98da3 smbraam <sander.braam@live.nl> 1772912331 +0100	commit (initial): Clean restart of project
+f4dc79866a0e4c2029f745722e7a6b124dd98da3 e104b277dcebefdf64035ccdcdfbbf66649a6fef smbraam <sander.braam@live.nl> 1772924292 +0100	commit: fix layout en ui aanpassingen
+e104b277dcebefdf64035ccdcdfbbf66649a6fef 8520326d789f86ace21e628f23b2e1ed78705b71 smbraam <sander.braam@live.nl> 1772927167 +0100	commit: Complete UI update with gpt 5.4
+8520326d789f86ace21e628f23b2e1ed78705b71 42e116f0d5aca07de388d47af7f80e18220695b1 smbraam <sander.braam@live.nl> 1772935146 +0100	commit: Major overall functionality changes
+42e116f0d5aca07de388d47af7f80e18220695b1 cf1ca097d590e1a46675638e339660a272a89c68 smbraam <sander.braam@live.nl> 1772981869 +0100	commit: Complete change of home page and added instruction at start
+cf1ca097d590e1a46675638e339660a272a89c68 8f955176f9a662cfb00d3c1f92dfc64a4597ebb0 smbraam <sander.braam@live.nl> 1773090573 +0100	commit: Machine functionality changes and added central machine API
+8f955176f9a662cfb00d3c1f92dfc64a4597ebb0 51b41feaba8407a9d2fb5e425eda8d3477c88d2b smbraam <sander.braam@live.nl> 1773176815 +0100	commit: UI changes and made new working macro's in printer.cfg
+51b41feaba8407a9d2fb5e425eda8d3477c88d2b b7a69470c180499fa6c6e029dcddd7d85c68e4b3 smbraam <sander.braam@live.nl> 1773509884 +0100	commit: Server update
+b7a69470c180499fa6c6e029dcddd7d85c68e4b3 e3215f15a16a6d1531e8636db7c61f7f25347963 smbraam <sander.braam@live.nl> 1773529102 +0100	commit: Major UI changes
+e3215f15a16a6d1531e8636db7c61f7f25347963 59a2152cdef26ee961a4440f29ddf41b8d35b041 smbraam <sander.braam@live.nl> 1773532634 +0100	commit: UI update
+59a2152cdef26ee961a4440f29ddf41b8d35b041 dc50a80dc0fc4b4e66e7c833842aff1a041cc3ec smbraam <sander.braam@live.nl> 1779388062 +0200	commit: UI update
+dc50a80dc0fc4b4e66e7c833842aff1a041cc3ec 59a2152cdef26ee961a4440f29ddf41b8d35b041 smbraam <sander.braam@live.nl> 1779389565 +0200	reset: moving to 59a2152
+59a2152cdef26ee961a4440f29ddf41b8d35b041 41a17a8f6bd145c4e8e48f99053e6c36d23f664d smbraam <sander.braam@live.nl> 1779392700 +0200	commit: UI update
+41a17a8f6bd145c4e8e48f99053e6c36d23f664d 6edc5b295100dad935b8208c3831c297da3e0df1 smbraam <smbraam@users.noreply.github.com> 1780242438 +0000	commit: - Normal
+6edc5b295100dad935b8208c3831c297da3e0df1 90450cff79c75f28fbadced27c3c91830385054e smbraam <smbraam@users.noreply.github.com> 1782335572 +0000	commit: Plasma startknop + contactstart procedure volledig geïmplementeerd
+90450cff79c75f28fbadced27c3c91830385054e 39af60017e5f8b426bb7062a2be1a8140eba9226 smbraam <smbraam@users.noreply.github.com> 1782576832 +0000	commit: Update homing-functionaliteit (nog niet klaar) en bedieningsinstructies.
+39af60017e5f8b426bb7062a2be1a8140eba9226 985124c82d56779f7c98675ef3f45fd8c0bc1f44 smbraam <smbraam@users.noreply.github.com> 1782588435 +0000	commit: Verbeter machinebediening en homing UI
+985124c82d56779f7c98675ef3f45fd8c0bc1f44 f2783db0852cd783e2f49b4e50c554d0f7448a22 smbraam <smbraam@users.noreply.github.com> 1783280548 +0000	commit: Update homing UI, shape limits, and printer config
