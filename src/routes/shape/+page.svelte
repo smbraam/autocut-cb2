@@ -3,8 +3,14 @@
   import { onMount } from 'svelte';
   import { emergencyStopState } from '$lib/emergency-stop-state';
   import { machineApi } from '$lib/machine-api';
-  import { DEFAULT_CUT_FEED_RATE, MAX_CUT_FEED_RATE, MIN_CUT_FEED_RATE, clampCutFeedRate } from '$lib/cut-speed';
-  import { DEFAULT_CUT_HEIGHT, MAX_CUT_HEIGHT, MIN_CUT_HEIGHT, clampCutHeight, DEFAULT_PIERCE_DELAY, DEFAULT_APPROACH_SPEED } from '$lib/cut-height';
+  import { DEFAULT_CUT_FEED_RATE, clampCutFeedRate } from '$lib/cut-speed';
+  import { DEFAULT_CUT_HEIGHT, clampCutHeight } from '$lib/cut-height';
+  import {
+    CUT_PROCESS_LIMITS,
+    defaultCutProcessSettings,
+    sanitizeCutProcessSettings,
+    type CutProcessSettings
+  } from '$lib/cut-process';
   import { uiSettings } from '$lib/ui-settings';
   import NumberPad from '$lib/NumberPad.svelte';
   import { autocutMachineState } from '$lib/autocut-machine-state';
@@ -15,9 +21,10 @@
   type ShapeId = "circle" | "slot" | "rect" | "hex";
   type Status = "idle" | "ready" | "waiting" | "busy" | "success" | "error";
 
+  type ShapeOrientation = 'lengthX' | 'widthX';
   type CircleCfg = { diameter: number };
-  type RectCfg = { length: number; width: number };
-  type SlotCfg = { length: number; width: number }; // radius = width/2
+  type RectCfg = { length: number; width: number; orientation: ShapeOrientation; cornerRadiusEnabled: boolean; cornerRadius: number };
+  type SlotCfg = { length: number; width: number; orientation: ShapeOrientation }; // radius = width/2
   type HexCfg = { acrossFlats: number }; // steekmaat / across flats
   type StoredShapeConfig = {
     selected?: ShapeId;
@@ -30,6 +37,7 @@
   const SHAPE_CONFIG_STORAGE_KEY = 'autocut-shape-config';
   const SHAPE_FEED_RATE_STORAGE_KEY = 'autocut-shape-cut-feed-rate';
   const SHAPE_CUT_HEIGHT_STORAGE_KEY = 'autocut-shape-cut-height';
+  const SHAPE_CUT_PROCESS_STORAGE_KEY = 'autocut-shape-cut-process';
 
   const shapes: { id: ShapeId; title: string; subtitle: string }[] = [
     { id: "circle", title: "Cirkel", subtitle: "Ø diameter" },
@@ -42,8 +50,8 @@
 
   // Config defaults (mm)
   let circle: CircleCfg = { diameter: 20 };
-  let rect: RectCfg = { length: 40, width: 20 };
-  let slot: SlotCfg = { length: 60, width: 12 };
+  let rect: RectCfg = { length: 40, width: 20, orientation: 'lengthX', cornerRadiusEnabled: false, cornerRadius: 3 };
+  let slot: SlotCfg = { length: 60, width: 12, orientation: 'lengthX' };
   let hex: HexCfg = { acrossFlats: 30 };
 
   // Machine status from Moonraker
@@ -58,8 +66,7 @@
   let statusMsg = "";
   let preparedGcode = ""; // buffer
   let preparedSummary = "";
-  let feedDefault = DEFAULT_CUT_FEED_RATE;
-  let cutHeight = DEFAULT_CUT_HEIGHT;
+  let cutProcess: CutProcessSettings = defaultCutProcessSettings;
   let developerMode = true;
   let hasConfiguredShape = false;
   let configuredFields: string[] = [];
@@ -107,6 +114,12 @@
     return rounded.toFixed(1).replace(/\.0$/, "");
   }
 
+  function fmtClean(n: number, decimals = 2) {
+    const factor = 10 ** decimals;
+    const rounded = Math.round(n * factor) / factor;
+    return rounded.toFixed(decimals).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, "");
+  }
+
   function xMax() {
     return xTravel;
   }
@@ -117,6 +130,46 @@
 
   function xyFitMax() {
     return Math.min(xTravel, yTravel);
+  }
+
+  function normalizeOrientation(value: unknown): ShapeOrientation {
+    return value === 'widthX' ? 'widthX' : 'lengthX';
+  }
+
+  function orientationLabel(value: ShapeOrientation) {
+    return value === 'lengthX' ? 'Lengte over X' : 'Breedte over X';
+  }
+
+  function rectLengthMax() {
+    return rect.orientation === 'lengthX' ? xMax() : yMax();
+  }
+
+  function rectWidthMax() {
+    return rect.orientation === 'lengthX' ? yMax() : xMax();
+  }
+
+  function rectXSize() {
+    return rect.orientation === 'lengthX' ? rect.length : rect.width;
+  }
+
+  function rectYSize() {
+    return rect.orientation === 'lengthX' ? rect.width : rect.length;
+  }
+
+  function slotLengthMax() {
+    return slot.orientation === 'lengthX' ? xMax() : yMax();
+  }
+
+  function slotWidthMax() {
+    return slot.orientation === 'lengthX' ? yMax() : xMax();
+  }
+
+  function slotXSize() {
+    return slot.orientation === 'lengthX' ? slot.length : slot.width;
+  }
+
+  function slotYSize() {
+    return slot.orientation === 'lengthX' ? slot.width : slot.length;
   }
 
   function isHomedXYZ() {
@@ -196,11 +249,32 @@
     circle = { diameter: clamp(circle.diameter, 0.1, xyFitMax()) };
   }
 
+  function rectMaxRadius(length = rect.length, width = rect.width) {
+    return Math.max(0, Math.min(length, width) / 2);
+  }
+
   function normalizeRect() {
-    rect = {
-      length: clamp(rect.length, 0.1, yMax()),
-      width: clamp(rect.width, 0.1, xMax())
-    };
+    const orientation = normalizeOrientation(rect.orientation);
+    const lengthLimit = orientation === 'lengthX' ? xMax() : yMax();
+    const widthLimit = orientation === 'lengthX' ? yMax() : xMax();
+    const length = clamp(rect.length, 0.1, lengthLimit);
+    const width = clamp(rect.width, 0.1, widthLimit);
+    const maxRadius = rectMaxRadius(length, width);
+    const cornerRadiusEnabled = Boolean(rect.cornerRadiusEnabled) && maxRadius >= 0.1;
+    const fallbackRadius = Math.min(3, maxRadius);
+    let cornerRadius = clamp(Number(rect.cornerRadius), 0, maxRadius);
+
+    if (!Number.isFinite(cornerRadius) || cornerRadius === 0) {
+      cornerRadius = cornerRadiusEnabled ? Math.max(0.1, fallbackRadius) : fallbackRadius;
+    }
+
+    if (cornerRadiusEnabled) {
+      cornerRadius = clamp(cornerRadius, 0.1, maxRadius);
+    } else {
+      cornerRadius = clamp(cornerRadius, 0, maxRadius);
+    }
+
+    rect = { length, width, orientation, cornerRadiusEnabled, cornerRadius };
   }
 
   function normalizeHex() {
@@ -208,10 +282,12 @@
   }
 
   function normalizeSlot() {
-    const maxWidth = Math.min(xMax(), yMax());
-    let w = clamp(slot.width, 0.1, maxWidth);
-    let l = clamp(slot.length, w, xMax());
-    slot = { length: l, width: w };
+    const orientation = normalizeOrientation(slot.orientation);
+    const lengthLimit = orientation === 'lengthX' ? xMax() : yMax();
+    const widthLimit = orientation === 'lengthX' ? yMax() : xMax();
+    const w = clamp(slot.width, 0.1, Math.min(widthLimit, lengthLimit));
+    const l = clamp(slot.length, w, lengthLimit);
+    slot = { length: l, width: w, orientation };
   }
 
   function normalizeAll() {
@@ -236,37 +312,79 @@
     localStorage.setItem(SHAPE_CONFIG_STORAGE_KEY, JSON.stringify(payload));
   }
 
-  function persistFeedRate() {
+  function persistCutProcess() {
     if (!browser) return;
-    localStorage.setItem(SHAPE_FEED_RATE_STORAGE_KEY, String(feedDefault));
+    localStorage.setItem(SHAPE_CUT_PROCESS_STORAGE_KEY, JSON.stringify(cutProcess));
   }
 
-  function persistCutHeight() {
+  function loadCutProcess() {
     if (!browser) return;
-    localStorage.setItem(SHAPE_CUT_HEIGHT_STORAGE_KEY, String(cutHeight));
+
+    const legacyFeed = localStorage.getItem(SHAPE_FEED_RATE_STORAGE_KEY);
+    const legacyHeight = localStorage.getItem(SHAPE_CUT_HEIGHT_STORAGE_KEY);
+    const legacy: Partial<CutProcessSettings> = {
+      straightFeedRate: legacyFeed === null ? DEFAULT_CUT_FEED_RATE : clampCutFeedRate(Number(legacyFeed), DEFAULT_CUT_FEED_RATE),
+      curveFeedRate: legacyFeed === null ? defaultCutProcessSettings.curveFeedRate : clampCutFeedRate(Number(legacyFeed), DEFAULT_CUT_FEED_RATE),
+      cutHeight: legacyHeight === null ? DEFAULT_CUT_HEIGHT : clampCutHeight(Number(legacyHeight), DEFAULT_CUT_HEIGHT)
+    };
+
+    try {
+      const raw = localStorage.getItem(SHAPE_CUT_PROCESS_STORAGE_KEY);
+      cutProcess = sanitizeCutProcessSettings(raw ? { ...legacy, ...JSON.parse(raw) } : legacy);
+    } catch {
+      cutProcess = sanitizeCutProcessSettings(legacy);
+    }
+
+    persistCutProcess();
   }
 
-  function loadFeedRate() {
-    if (!browser) return;
-    const stored = localStorage.getItem(SHAPE_FEED_RATE_STORAGE_KEY);
-    feedDefault = stored === null ? DEFAULT_CUT_FEED_RATE : clampCutFeedRate(Number(stored), DEFAULT_CUT_FEED_RATE);
-  }
-
-  function loadCutHeight() {
-    if (!browser) return;
-    const stored = localStorage.getItem(SHAPE_CUT_HEIGHT_STORAGE_KEY);
-    cutHeight = stored === null ? DEFAULT_CUT_HEIGHT : clampCutHeight(Number(stored), DEFAULT_CUT_HEIGHT);
-  }
-
-  function setFeedRate(value: number) {
-    feedDefault = clampCutFeedRate(value, feedDefault);
-    persistFeedRate();
+  function setCutProcessValue(key: keyof CutProcessSettings, value: number) {
+    cutProcess = sanitizeCutProcessSettings({ ...cutProcess, [key]: value });
+    persistCutProcess();
     resetPrepared();
   }
 
-  function setCutHeight(value: number) {
-    cutHeight = clampCutHeight(value, cutHeight);
-    persistCutHeight();
+  function openCutProcessPad(title: string, key: keyof CutProcessSettings, unit: string) {
+    const limits = CUT_PROCESS_LIMITS[key];
+    openNumpad({
+      title,
+      value: cutProcess[key],
+      min: limits.min,
+      max: limits.max,
+      unit,
+      apply: (v) => setCutProcessValue(key, v)
+    });
+  }
+
+  function toggleRectCornerRadius() {
+    rect = { ...rect, cornerRadiusEnabled: !rect.cornerRadiusEnabled };
+    normalizeRect();
+    persistShapeConfig();
+    markShapeFieldConfigured('cornerRadius');
+    resetPrepared();
+  }
+
+  function setRectCornerRadius(value: number) {
+    rect = { ...rect, cornerRadius: value, cornerRadiusEnabled: true };
+    normalizeRect();
+    markShapeFieldConfigured('cornerRadius');
+  }
+
+  function nextOrientation(value: ShapeOrientation): ShapeOrientation {
+    return value === 'lengthX' ? 'widthX' : 'lengthX';
+  }
+
+  function toggleRectOrientation() {
+    rect = { ...rect, orientation: nextOrientation(rect.orientation) };
+    normalizeRect();
+    persistShapeConfig();
+    resetPrepared();
+  }
+
+  function toggleSlotOrientation() {
+    slot = { ...slot, orientation: nextOrientation(slot.orientation) };
+    normalizeSlot();
+    persistShapeConfig();
     resetPrepared();
   }
 
@@ -282,11 +400,15 @@
       circle = { diameter: Number(parsed.circle?.diameter ?? circle.diameter) || circle.diameter };
       rect = {
         length: Number(parsed.rect?.length ?? rect.length) || rect.length,
-        width: Number(parsed.rect?.width ?? rect.width) || rect.width
+        width: Number(parsed.rect?.width ?? rect.width) || rect.width,
+        orientation: normalizeOrientation(parsed.rect?.orientation ?? rect.orientation),
+        cornerRadiusEnabled: Boolean(parsed.rect?.cornerRadiusEnabled ?? rect.cornerRadiusEnabled),
+        cornerRadius: Number(parsed.rect?.cornerRadius ?? rect.cornerRadius) || rect.cornerRadius
       };
       slot = {
         length: Number(parsed.slot?.length ?? slot.length) || slot.length,
-        width: Number(parsed.slot?.width ?? slot.width) || slot.width
+        width: Number(parsed.slot?.width ?? slot.width) || slot.width,
+        orientation: normalizeOrientation(parsed.slot?.orientation ?? slot.orientation)
       };
       hex = { acrossFlats: Number(parsed.hex?.acrossFlats ?? hex.acrossFlats) || hex.acrossFlats };
       normalizeAll();
@@ -424,190 +546,219 @@
   }
 
   // --- G-code generation (XY only, relative for safety) ---
+  type FeedKind = 'straight' | 'curve';
+  type Point = { x: number; y: number };
+
+  function moveFeed(kind: FeedKind) {
+    return kind === 'curve' ? cutProcess.curveFeedRate : cutProcess.straightFeedRate;
+  }
+
+  function g1xy(dx: number, dy: number, kind: FeedKind = 'straight', comment = '') {
+    const suffix = comment ? ` ; ${comment}` : '';
+    return `G1 X${dx.toFixed(3)} Y${dy.toFixed(3)} F${moveFeed(kind)}${suffix}`;
+  }
+
+  function pushAbsMove(moves: string[], from: Point, to: Point, kind: FeedKind, comment = '') {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (Math.abs(dx) < 0.0005 && Math.abs(dy) < 0.0005) return from;
+
+    moves.push(g1xy(dx, dy, kind, comment));
+    return to;
+  }
+
+  function addArcSegments(
+    moves: string[],
+    current: Point,
+    center: Point,
+    radius: number,
+    startDeg: number,
+    endDeg: number,
+    segments: number
+  ) {
+    let prev = current;
+
+    for (let i = 1; i <= segments; i++) {
+      const deg = startDeg + ((endDeg - startDeg) * i) / segments;
+      const t = (deg * Math.PI) / 180;
+      const next = {
+        x: center.x + radius * Math.cos(t),
+        y: center.y + radius * Math.sin(t)
+      };
+      prev = pushAbsMove(moves, prev, next, 'curve');
+    }
+
+    return prev;
+  }
+
+  function dwellSeconds(seconds: number, comment: string) {
+    const ms = Math.round(Math.max(0, seconds) * 1000);
+    return ms > 0 ? [`G4 P${ms} ; ${comment}`] : [];
+  }
+
   function gcodeHeader() {
     return [
-      "; AutoCut shape cut (XY only)",
-      "M400",
-      "G90",
-      "G21",
-      `G91 ; relative moves`,
-      `G1 F${feedDefault}`
+      '; AutoCut shape cut (XY only)',
+      'M400',
+      'G90',
+      'G21'
     ];
   }
 
-  function gcodeContactStart(cutHeightMm: number) {
-    // Contact start procedure:
-    // 1. Toorts bekrachtigen
-    // 2. Langzaam naar beneden bewegen (approach)
-    // 3. Materiaal raken (Z=0 assumed after touch)
-    // 4. Omhoog naar snijhoogte
-    // 5. Pierce delay
-    const approachSpeed = DEFAULT_APPROACH_SPEED; // mm/min
-    const pierceDelay = DEFAULT_PIERCE_DELAY; // seconds
-    
+  function gcodeContactStart() {
     return [
-      "; Contact start procedure",
-      "TORCH_ON",
-      `G1 Z-10 F${approachSpeed} ; langzaam naar beneden tot materiaal contact`,
-      "G4 P0.1 ; korte pauze na contact",
-      `G1 Z${cutHeightMm.toFixed(3)} F${approachSpeed * 2} ; omhoog naar snijhoogte`,
-      `G4 P${pierceDelay.toFixed(2)} ; pierce delay`,
-      "; Start snijden"
+      '; Contact start procedure',
+      'TORCH_ON',
+      ...dwellSeconds(cutProcess.torchLeadTime, 'voorlooptijd toorts'),
+      `G1 Z${cutProcess.contactOffset.toFixed(3)} F${cutProcess.contactDownSpeed} ; naar contact-offset`,
+      ...dwellSeconds(cutProcess.contactSettleTime, 'pauze na contact'),
+      `G1 Z${cutProcess.cutHeight.toFixed(3)} F${cutProcess.contactLiftSpeed} ; omhoog naar snijhoogte`,
+      ...dwellSeconds(cutProcess.pierceDelay, 'pierce delay'),
+      'G91 ; relative contour moves',
+      `G1 F${cutProcess.straightFeedRate} ; snijfeed herstellen`,
+      '; Start snijden'
     ];
   }
 
   function gcodeFooter() {
     return [
-      "; Einde snijden",
-      "TORCH_OFF",
-      "M400",
-      `G1 Z10 F${DEFAULT_APPROACH_SPEED * 2} ; omhoog na snijden`,
-      "G90 ; back to absolute",
-      "; end"
+      '; Einde snijden',
+      'TORCH_OFF',
+      'M400',
+      `G1 Z${cutProcess.finishLiftHeight.toFixed(3)} F${cutProcess.finishLiftSpeed} ; omhoog na snijden`,
+      'G90 ; back to absolute',
+      '; end'
     ];
   }
 
   function genRect(L: number, B: number) {
-    // Teken de rechthoek met de lengte over X, dus liggend in de breedte.
-    const halfL = L / 2;
-    const halfB = B / 2;
+    const xSize = rect.orientation === 'lengthX' ? L : B;
+    const ySize = rect.orientation === 'lengthX' ? B : L;
+    const radius = rect.cornerRadiusEnabled ? clamp(rect.cornerRadius, 0.1, Math.min(xSize, ySize) / 2) : 0;
+    const halfX = xSize / 2;
+    const halfY = ySize / 2;
 
-    const lines = [
-      `G1 X${(-halfL).toFixed(3)} Y${(-halfB).toFixed(3)}`,
-      `G1 X${(L).toFixed(3)} Y0`,
-      `G1 X0 Y${(B).toFixed(3)}`,
-      `G1 X${(-L).toFixed(3)} Y0`,
-      `G1 X0 Y${(-B).toFixed(3)}`,
-      `G1 X${(halfL).toFixed(3)} Y${(halfB).toFixed(3)} ; back to center`
-    ];
-    return { lines, summary: `Rechthoek L=${fmt(L)} B=${fmt(B)}` };
+    if (radius <= 0) {
+      const lines = [
+        g1xy(-halfX, -halfY, 'straight', 'to start'),
+        g1xy(xSize, 0, 'straight'),
+        g1xy(0, ySize, 'straight'),
+        g1xy(-xSize, 0, 'straight'),
+        g1xy(0, -ySize, 'straight'),
+        g1xy(halfX, halfY, 'straight', 'back to center')
+      ];
+      return { lines, summary: `Rechthoek L=${fmt(L)} B=${fmt(B)} (${orientationLabel(rect.orientation)})` };
+    }
+
+    const seg = Math.max(4, Math.ceil(radius * 1.5));
+    const moves: string[] = [];
+    let current: Point = { x: 0, y: 0 };
+    const startPoint = { x: -halfX + radius, y: -halfY };
+
+    current = pushAbsMove(moves, current, startPoint, 'straight', 'to start');
+    current = pushAbsMove(moves, current, { x: halfX - radius, y: -halfY }, 'straight');
+    current = addArcSegments(moves, current, { x: halfX - radius, y: -halfY + radius }, radius, -90, 0, seg);
+    current = pushAbsMove(moves, current, { x: halfX, y: halfY - radius }, 'straight');
+    current = addArcSegments(moves, current, { x: halfX - radius, y: halfY - radius }, radius, 0, 90, seg);
+    current = pushAbsMove(moves, current, { x: -halfX + radius, y: halfY }, 'straight');
+    current = addArcSegments(moves, current, { x: -halfX + radius, y: halfY - radius }, radius, 90, 180, seg);
+    current = pushAbsMove(moves, current, { x: -halfX, y: -halfY + radius }, 'straight');
+    current = addArcSegments(moves, current, { x: -halfX + radius, y: -halfY + radius }, radius, 180, 270, seg);
+    pushAbsMove(moves, current, { x: 0, y: 0 }, 'straight', 'back to center');
+
+    return { lines: moves, summary: `Rechthoek L=${fmt(L)} B=${fmt(B)} R=${fmt(radius)} (${orientationLabel(rect.orientation)})` };
   }
 
   function genHex(S: number) {
-    // Regular hexagon centered. Across flats S.
-    // apothem a = S/2. circumradius R = a / cos(30) = (S/2)/0.8660254
     const a = S / 2;
     const R = a / 0.866025403784;
-    // 6 vertices rotated 30deg so the hexagon has a flat bottom.
     const ang = [-60, 0, 60, 120, 180, 240].map((d) => (d * Math.PI) / 180);
     const pts = ang.map((t) => ({ x: R * Math.cos(t), y: R * Math.sin(t) }));
 
-    // Move to first vertex relative from center, then draw edges by delta between consecutive points, then back to center.
-    const first = pts[0];
+    let current: Point = { x: 0, y: 0 };
     const moves: string[] = [];
-    moves.push(`G1 X${first.x.toFixed(3)} Y${first.y.toFixed(3)}`);
+    current = pushAbsMove(moves, current, pts[0], 'straight', 'to start');
     for (let i = 1; i < pts.length; i++) {
-      const dx = pts[i].x - pts[i - 1].x;
-      const dy = pts[i].y - pts[i - 1].y;
-      moves.push(`G1 X${dx.toFixed(3)} Y${dy.toFixed(3)}`);
+      current = pushAbsMove(moves, current, pts[i], 'straight');
     }
-    // close back to first
-    const dx0 = pts[0].x - pts[pts.length - 1].x;
-    const dy0 = pts[0].y - pts[pts.length - 1].y;
-    moves.push(`G1 X${dx0.toFixed(3)} Y${dy0.toFixed(3)}`);
-    // return to center
-    moves.push(`G1 X${(-first.x).toFixed(3)} Y${(-first.y).toFixed(3)} ; back to center`);
+    current = pushAbsMove(moves, current, pts[0], 'straight');
+    pushAbsMove(moves, current, { x: 0, y: 0 }, 'straight', 'back to center');
 
     return { lines: moves, summary: `Zeskant S=${fmt(S)}` };
   }
 
   function genCircle(d: number) {
     const r = d / 2;
-    // polygon approximation around center
     const N = CIRCLE_SEGMENTS;
-    const pts: { x: number; y: number }[] = [];
+    const pts: Point[] = [];
     for (let i = 0; i < N; i++) {
       const t = (i / N) * Math.PI * 2;
       pts.push({ x: r * Math.cos(t), y: r * Math.sin(t) });
     }
 
+    let current: Point = { x: 0, y: 0 };
     const moves: string[] = [];
-    // move from center to first point
-    moves.push(`G1 X${pts[0].x.toFixed(3)} Y${pts[0].y.toFixed(3)}`);
+    current = pushAbsMove(moves, current, pts[0], 'straight', 'to start');
     for (let i = 1; i < pts.length; i++) {
-      moves.push(`G1 X${(pts[i].x - pts[i - 1].x).toFixed(3)} Y${(pts[i].y - pts[i - 1].y).toFixed(3)}`);
+      current = pushAbsMove(moves, current, pts[i], 'curve');
     }
-    // close
-    moves.push(`G1 X${(pts[0].x - pts[pts.length - 1].x).toFixed(3)} Y${(pts[0].y - pts[pts.length - 1].y).toFixed(3)}`);
-    // return to center
-    moves.push(`G1 X${(-pts[0].x).toFixed(3)} Y${(-pts[0].y).toFixed(3)} ; back to center`);
+    current = pushAbsMove(moves, current, pts[0], 'curve');
+    pushAbsMove(moves, current, { x: 0, y: 0 }, 'straight', 'back to center');
 
     return { lines: moves, summary: `Cirkel Ø=${fmt(d)}` };
   }
 
   function genSlot(L: number, B: number) {
-    // Slot: rectangle with semicircle ends.
-    // We approximate arcs with segments too.
     const R = B / 2;
     const straight = L - 2 * R;
-    // If straight is 0, it's a circle (but normalizeSlot ensures L>=B so straight>=0)
-    const seg = 24; // arc segments per half circle
-
-    // We build the path centered. Start at left-middle of slot, go to left-top arc, across, right arc, back.
-    // Strategy (relative):
-    // Move to start point: (-L/2, 0) + (0, +R) ? Let's start at left-top point.
-    // left-top point relative from center: x = -straight/2, y = +R
-    const x0 = -straight / 2;
-    const y0 = R;
-
+    const seg = 24;
     const moves: string[] = [];
-    moves.push(`G1 X${x0.toFixed(3)} Y${y0.toFixed(3)} ; to start (left-top)`);
+    let current: Point = { x: 0, y: 0 };
 
-    // top straight to right-top
-    moves.push(`G1 X${straight.toFixed(3)} Y0`);
+    function orientPoint(x: number, y: number): Point {
+      return slot.orientation === 'lengthX' ? { x, y } : { x: y, y: x };
+    }
 
-    // right half circle (top to bottom) around right end, center at (+straight/2, 0)
-    // param from 90deg to -90deg
-    let prev = { x: 0, y: 0 };
-    for (let i = 0; i <= seg; i++) {
+    function pushSlotPoint(x: number, y: number, kind: FeedKind, comment = '') {
+      current = pushAbsMove(moves, current, orientPoint(x, y), kind, comment);
+    }
+
+    pushSlotPoint(-straight / 2, R, 'straight', 'to start');
+    pushSlotPoint(straight / 2, R, 'straight');
+
+    for (let i = 1; i <= seg; i++) {
       const t = (90 - (180 * i) / seg) * (Math.PI / 180);
-      const x = R * Math.cos(t);
-      const y = R * Math.sin(t);
-      if (i === 0) prev = { x, y };
-      else {
-        moves.push(`G1 X${(x - prev.x).toFixed(3)} Y${(y - prev.y).toFixed(3)}`);
-        prev = { x, y };
-      }
+      pushSlotPoint(straight / 2 + R * Math.cos(t), R * Math.sin(t), 'curve');
     }
 
-    // bottom straight back to left-bottom
-    moves.push(`G1 X${(-straight).toFixed(3)} Y0`);
+    pushSlotPoint(-straight / 2, -R, 'straight');
 
-    // left half circle (bottom to top) around left end, center at (-straight/2,0)
-    // param from -90deg to 90deg
-    prev = { x: 0, y: 0 };
-    for (let i = 0; i <= seg; i++) {
+    for (let i = 1; i <= seg; i++) {
       const t = (-90 + (180 * i) / seg) * (Math.PI / 180);
-      const x = R * Math.cos(t);
-      const y = R * Math.sin(t);
-      if (i === 0) prev = { x, y };
-      else {
-        moves.push(`G1 X${(x - prev.x).toFixed(3)} Y${(y - prev.y).toFixed(3)}`);
-        prev = { x, y };
-      }
+      pushSlotPoint(-straight / 2 + R * Math.cos(t), R * Math.sin(t), 'curve');
     }
 
-    // Now we are back at left-top. Return to center: from left-top to center is (+straight/2, -R)
-    moves.push(`G1 X${(straight / 2).toFixed(3)} Y${(-R).toFixed(3)} ; back to center`);
+    pushAbsMove(moves, current, { x: 0, y: 0 }, 'straight', 'back to center');
 
-    return { lines: moves, summary: `Sleufgat L=${fmt(L)} B=${fmt(B)} (R=${fmt(R)})` };
+    return { lines: moves, summary: `Sleufgat L=${fmt(L)} B=${fmt(B)} (R=${fmt(R)}, ${orientationLabel(slot.orientation)})` };
   }
 
   function buildGcodeForSelection() {
     normalizeAll();
+    cutProcess = sanitizeCutProcessSettings(cutProcess);
 
     if (!selected) {
-      throw new Error("Geen vorm geselecteerd.");
+      throw new Error('Geen vorm geselecteerd.');
     }
 
     let body: { lines: string[]; summary: string };
 
-    if (selected === "circle") body = genCircle(circle.diameter);
-    else if (selected === "rect") body = genRect(rect.length, rect.width);
-    else if (selected === "slot") body = genSlot(slot.length, slot.width);
+    if (selected === 'circle') body = genCircle(circle.diameter);
+    else if (selected === 'rect') body = genRect(rect.length, rect.width);
+    else if (selected === 'slot') body = genSlot(slot.length, slot.width);
     else body = genHex(hex.acrossFlats);
 
-    const gcode = [...gcodeHeader(), ...gcodeContactStart(cutHeight), ...body.lines, ...gcodeFooter()].join("\n");
+    const gcode = [...gcodeHeader(), ...gcodeContactStart(), ...body.lines, ...gcodeFooter()].join('\n');
     return { gcode, summary: body.summary };
   }
 
@@ -702,6 +853,16 @@
     return 38;
   }
 
+  function rectPreviewRadius(box: { w: number; h: number }) {
+    if (!rect.cornerRadiusEnabled) return 0;
+    const scale = box.w / Math.max(rectXSize(), 0.1);
+    return Math.min(box.w / 2, box.h / 2, rect.cornerRadius * scale);
+  }
+
+  function slotPreviewRadius(box: { w: number; h: number }) {
+    return Math.min(box.w, box.h) / 2;
+  }
+
   function hexPointsForPreview(S: number) {
     const px = 76;
     const cx = VB / 2;
@@ -742,8 +903,7 @@
     uiSettings.load();
     autocutMachineState.load();
     loadShapeConfig();
-    loadFeedRate();
-    loadCutHeight();
+    loadCutProcess();
     hasConfiguredShape = selected !== null;
     void refreshMachine(true);
     const poll = setInterval(() => void refreshMachine(false), 1000);
@@ -1076,6 +1236,16 @@
     text-align: left;
   }
 
+  .toggleValue {
+    color: #b7c6ea;
+  }
+
+  .toggleValue.active {
+    border-color: rgba(74, 222, 128, 0.5);
+    background: rgba(22, 80, 52, 0.38);
+    color: #bcffd1;
+  }
+
   .hintRow {
     margin-top: 4px;
     color: #b7c6ea;
@@ -1126,9 +1296,9 @@
     margin-bottom: 12px;
   }
 
-  .cutSetupGrid {
+  .processGrid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
     align-items: stretch;
     margin-bottom: 12px;
@@ -1142,7 +1312,7 @@
   @media (max-width: 760px) {
     .shapeGrid,
     .fieldGrid,
-    .cutSetupGrid,
+    .processGrid,
     .actionBar,
     .actionBar.three,
     .singleFieldGrid { grid-template-columns: 1fr; }
@@ -1193,7 +1363,7 @@
                   </svg>
                 {:else if s.id === "rect"}
                   <svg width="60" height="60" viewBox="0 0 120 120">
-                    <rect x="24" y="38" width="72" height="44" rx="6" fill="none" stroke="#6aa7ff" stroke-width="6" />
+                    <rect x="24" y="38" width="72" height="44" rx="0" fill="none" stroke="#6aa7ff" stroke-width="6" />
                   </svg>
                 {:else if s.id === "slot"}
                   <svg width="60" height="60" viewBox="0 0 120 120">
@@ -1270,7 +1440,7 @@
                     title: "Lengte L (mm)",
                     value: rect.length,
                     min: 0.1,
-                    max: yMax(),
+                    max: rectLengthMax(),
                     apply: (v) => {
                       rect = { ...rect, length: v };
                       normalizeRect();
@@ -1292,7 +1462,7 @@
                     title: "Breedte B (mm)",
                     value: rect.width,
                     min: 0.1,
-                    max: xMax(),
+                    max: rectWidthMax(),
                     apply: (v) => {
                       rect = { ...rect, width: v };
                       normalizeRect();
@@ -1301,6 +1471,48 @@
                   })}
               >
                 {rect.width.toFixed(1)} mm
+              </button>
+            </div>
+
+            <div class="field">
+              <div class="label">Hoekradius toepassen</div>
+              <button
+                type="button"
+                class={`valueBox toggleValue ${rect.cornerRadiusEnabled ? 'active' : ''}`}
+                on:click={toggleRectCornerRadius}
+              >
+                {rect.cornerRadiusEnabled ? 'Aan' : 'Uit'}
+              </button>
+            </div>
+
+            {#if rect.cornerRadiusEnabled}
+              <div class="field">
+                <div class="label">Hoekradius R (mm)</div>
+                <button
+                  type="button"
+                  class="valueBox"
+                  on:click={() =>
+                    openNumpad({
+                      title: "Hoekradius R (mm)",
+                      value: rect.cornerRadius,
+                      min: 0.1,
+                      max: rectMaxRadius(),
+                      apply: setRectCornerRadius
+                    })}
+                >
+                  {rect.cornerRadius.toFixed(1)} mm
+                </button>
+              </div>
+            {/if}
+
+            <div class="field">
+              <div class="label">Oriëntatie</div>
+              <button
+                type="button"
+                class="valueBox"
+                on:click={toggleRectOrientation}
+              >
+                {orientationLabel(rect.orientation)}
               </button>
             </div>
           {:else if selected === "slot"}
@@ -1314,7 +1526,7 @@
                     title: "Lengte L (mm)",
                     value: slot.length,
                     min: slot.width,
-                    max: xMax(),
+                    max: slotLengthMax(),
                     apply: (v) => {
                       slot = { ...slot, length: v };
                       normalizeSlot();
@@ -1336,7 +1548,7 @@
                     title: "Breedte B (mm)",
                     value: slot.width,
                     min: 0.1,
-                    max: Math.min(xMax(), yMax()),
+                    max: Math.min(slotWidthMax(), slot.length),
                     apply: (v) => {
                       slot = { ...slot, width: v };
                       normalizeSlot();
@@ -1345,6 +1557,17 @@
                   })}
               >
                 {slot.width.toFixed(1)} mm
+              </button>
+            </div>
+
+            <div class="field">
+              <div class="label">Oriëntatie</div>
+              <button
+                type="button"
+                class="valueBox"
+                on:click={toggleSlotOrientation}
+              >
+                {orientationLabel(slot.orientation)}
               </button>
             </div>
           {:else}
@@ -1403,14 +1626,14 @@
               <circle cx="60" cy="60" r={circlePreviewRadius()} fill="none" stroke="#6aa7ff" stroke-width="5" />
             </svg>
           {:else if selected === "rect"}
-            {@const box = fitPreview(rect.width, rect.length)}
+            {@const box = fitPreview(rectXSize(), rectYSize())}
             <svg class="bigSvg" viewBox="0 0 120 120">
-              <rect x={box.x} y={box.y} width={box.w} height={box.h} rx="6" fill="none" stroke="#6aa7ff" stroke-width="5" />
+              <rect x={box.x} y={box.y} width={box.w} height={box.h} rx={rectPreviewRadius(box)} ry={rectPreviewRadius(box)} fill="none" stroke="#6aa7ff" stroke-width="5" />
             </svg>
           {:else if selected === "slot"}
-            {@const box = fitPreview(slot.length, slot.width)}
+            {@const box = fitPreview(slotXSize(), slotYSize())}
             <svg class="bigSvg" viewBox="0 0 120 120">
-              <rect x={box.x} y={box.y} width={box.w} height={box.h} rx={box.h / 2} ry={box.h / 2} fill="none" stroke="#6aa7ff" stroke-width="5" />
+              <rect x={box.x} y={box.y} width={box.w} height={box.h} rx={slotPreviewRadius(box)} ry={slotPreviewRadius(box)} fill="none" stroke="#6aa7ff" stroke-width="5" />
             </svg>
           {:else}
             <svg class="bigSvg" viewBox="0 0 120 120">
@@ -1436,23 +1659,31 @@
         <div class="panelTitle">Snijden</div>
       </div>
 
-      <div class="cutSetupGrid">
+      <div class="helperBox" style="margin-bottom: 12px;">
+        <strong>Snijparameters</strong>
+        Rechte contouren gebruiken de rechte snijsnelheid. Cirkels, sleufbogen en afgeronde rechthoekhoeken gebruiken de bochtsnelheid. Tijden worden als echte seconden naar Klipper vertaald.
+      </div>
+
+      <div class="processGrid">
         <div class="field">
-          <div class="label">Snijsnelheid</div>
+          <div class="label">Recht snijden</div>
           <button
             type="button"
             class="valueBox"
-            on:click={() =>
-              openNumpad({
-                title: 'Snijsnelheid (mm/min)',
-                value: feedDefault,
-                min: MIN_CUT_FEED_RATE,
-                max: MAX_CUT_FEED_RATE,
-                unit: 'mm/min',
-                apply: setFeedRate
-              })}
+            on:click={() => openCutProcessPad('Recht snijden (mm/min)', 'straightFeedRate', 'mm/min')}
           >
-            {feedDefault} mm/min
+            {cutProcess.straightFeedRate} mm/min
+          </button>
+        </div>
+
+        <div class="field">
+          <div class="label">Bochten</div>
+          <button
+            type="button"
+            class="valueBox"
+            on:click={() => openCutProcessPad('Bochten (mm/min)', 'curveFeedRate', 'mm/min')}
+          >
+            {cutProcess.curveFeedRate} mm/min
           </button>
         </div>
 
@@ -1461,24 +1692,99 @@
           <button
             type="button"
             class="valueBox"
-            on:click={() =>
-              openNumpad({
-                title: 'Snijhoogte (mm)',
-                value: cutHeight,
-                min: MIN_CUT_HEIGHT,
-                max: MAX_CUT_HEIGHT,
-                unit: 'mm',
-                apply: setCutHeight
-              })}
+            on:click={() => openCutProcessPad('Snijhoogte (mm)', 'cutHeight', 'mm')}
           >
-            {cutHeight.toFixed(1)} mm
+            {fmtClean(cutProcess.cutHeight)} mm
           </button>
         </div>
-      </div>
 
-      <div class="helperBox" style="margin-bottom: 12px;">
-        <strong>Snij parameters</strong>
-        Snijsnelheid en snijhoogte worden meegenomen in de gegenereerde G-code. De snijhoogte wordt aangehouden tijdens het snijproces na de contactstart.
+        <div class="field">
+          <div class="label">Contact-offset</div>
+          <button
+            type="button"
+            class="valueBox"
+            on:click={() => openCutProcessPad('Contact-offset (mm)', 'contactOffset', 'mm')}
+          >
+            {fmtClean(cutProcess.contactOffset)} mm
+          </button>
+        </div>
+
+        <div class="field">
+          <div class="label">Z omlaag contact</div>
+          <button
+            type="button"
+            class="valueBox"
+            on:click={() => openCutProcessPad('Z omlaag contact (mm/min)', 'contactDownSpeed', 'mm/min')}
+          >
+            {cutProcess.contactDownSpeed} mm/min
+          </button>
+        </div>
+
+        <div class="field">
+          <div class="label">Z omhoog contact</div>
+          <button
+            type="button"
+            class="valueBox"
+            on:click={() => openCutProcessPad('Z omhoog contact (mm/min)', 'contactLiftSpeed', 'mm/min')}
+          >
+            {cutProcess.contactLiftSpeed} mm/min
+          </button>
+        </div>
+
+        <div class="field">
+          <div class="label">Voorlooptijd toorts</div>
+          <button
+            type="button"
+            class="valueBox"
+            on:click={() => openCutProcessPad('Voorlooptijd toorts (s)', 'torchLeadTime', 's')}
+          >
+            {fmtClean(cutProcess.torchLeadTime)} s
+          </button>
+        </div>
+
+        <div class="field">
+          <div class="label">Pauze na contact</div>
+          <button
+            type="button"
+            class="valueBox"
+            on:click={() => openCutProcessPad('Pauze na contact (s)', 'contactSettleTime', 's')}
+          >
+            {fmtClean(cutProcess.contactSettleTime)} s
+          </button>
+        </div>
+
+        <div class="field">
+          <div class="label">Pierce delay</div>
+          <button
+            type="button"
+            class="valueBox"
+            on:click={() => openCutProcessPad('Pierce delay (s)', 'pierceDelay', 's')}
+          >
+            {fmtClean(cutProcess.pierceDelay)} s
+          </button>
+        </div>
+
+        <div class="field">
+          <div class="label">Eind-lift hoogte</div>
+          <button
+            type="button"
+            class="valueBox"
+            on:click={() => openCutProcessPad('Eind-lift hoogte (mm)', 'finishLiftHeight', 'mm')}
+          >
+            {fmtClean(cutProcess.finishLiftHeight)} mm
+          </button>
+        </div>
+
+        <div class="field">
+          <div class="label">Eind-lift snelheid</div>
+          <button
+            type="button"
+            class="valueBox"
+            on:click={() => openCutProcessPad('Eind-lift snelheid (mm/min)', 'finishLiftSpeed', 'mm/min')}
+          >
+            {cutProcess.finishLiftSpeed} mm/min
+          </button>
+        </div>
       </div>
 
       <div class="flowStatusRow">
@@ -1525,7 +1831,7 @@
   open={padOpen}
   title={padTitle}
   value={padValue}
-  subtitle={`Huidig: ${fmt(padCurrent)} ${padUnit} · Toegestaan: ${fmtLimit(padMin)} – ${fmtLimit(padMax)} ${padUnit}`}
+  subtitle={`Huidig: ${fmtClean(padCurrent)} ${padUnit} · Toegestaan: ${fmtClean(padMin)} – ${fmtClean(padMax)} ${padUnit}`}
   error={padError}
   onClose={padCancel}
   onAppend={padAppend}
