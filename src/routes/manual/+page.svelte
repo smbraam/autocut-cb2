@@ -5,6 +5,7 @@
   import { machineApi } from '$lib/machine-api';
   import { uiSettings } from '$lib/ui-settings';
   import NumberPad from '$lib/NumberPad.svelte';
+  import { autocutMachineState } from '$lib/autocut-machine-state';
 
   /**
   * Manual jog via Moonraker proxy
@@ -30,6 +31,8 @@
   let stepZ = 5;
   let developerMode = true;
   let devMacros: string[] = [];
+  let configLoaded = false;
+  let lastConfigRefresh = 0;
 
   // keypad modal
   let keypadOpen = false;
@@ -69,8 +72,16 @@
     return axis === "X" ? 0 : axis === "Y" ? 1 : 2;
   }
 
+  function displayHomedAxes() {
+    return $autocutMachineState.homedAxes || homedAxes.join('');
+  }
+
+  function displayPosition() {
+    return $autocutMachineState.position ?? pos;
+  }
+
   function isAxisHomed(axis: "X" | "Y" | "Z") {
-    return homedAxes.includes(axis.toLowerCase());
+    return displayHomedAxes().includes(axis.toLowerCase());
   }
 
   function clamp(n: number, min: number, max: number) {
@@ -85,7 +96,7 @@
 
   function axisPositionValue(axis: "X" | "Y" | "Z") {
     if (!isAxisHomed(axis)) return "--";
-    return pos[axisIndex(axis)].toFixed(1);
+    return displayPosition()[axisIndex(axis)].toFixed(1);
   }
 
   function axisEndstopTriggered(status: Record<string, string>, axis: 'x' | 'y' | 'z') {
@@ -138,6 +149,7 @@
   async function emergencyStopMachine() {
     try {
       await machineApi.emergencyStop();
+      autocutMachineState.clear();
       emergencyStopState.activate();
       lastError = '';
     } catch (e: any) {
@@ -146,9 +158,10 @@
     }
   }
 
-  async function refreshState() {
+  async function refreshState(includeConfig = false) {
     try {
-      const q = await machineApi.getStatus(true);
+      const shouldLoadConfig = includeConfig || !configLoaded || Date.now() - lastConfigRefresh > 10000;
+      const q = await machineApi.getStatus(shouldLoadConfig);
       const status = q?.result?.status ?? {};
       const toolhead = status.toolhead ?? {};
       const gcodeMove = status.gcode_move ?? {};
@@ -170,29 +183,32 @@
         machineState = printState ? printState.charAt(0).toUpperCase() + printState.slice(1) : 'Unknown';
       }
 
-      // position
-      pos = normalizePosition(toolhead.position) ?? normalizePosition(gcodeMove.gcode_position) ?? pos;
+      const livePosition = normalizePosition(toolhead.position) ?? normalizePosition(gcodeMove.gcode_position);
+      const klipperHomedAxes = normalizeHomedAxes(toolhead.homed_axes);
+      if (klipperHomedAxes.length) autocutMachineState.mergeKlipper(klipperHomedAxes.join(''), livePosition);
+      if (livePosition && !homedAxes.length) pos = livePosition;
 
-      // homed axes
-      homedAxes = normalizeHomedAxes(toolhead.homed_axes);
+      if (shouldLoadConfig) {
+        const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
+        const sy = cfg['carriage y'] ?? cfg['stepper_y'] ?? {};
+        const sz = cfg['carriage z'] ?? cfg['stepper_z'] ?? {};
+        devMacros = extractDevMacros(cfg);
 
-      // read limits from config
-      const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
-      const sy = cfg['carriage y'] ?? cfg['stepper_y'] ?? {};
-      const sz = cfg['carriage z'] ?? cfg['stepper_z'] ?? {};
-      devMacros = extractDevMacros(cfg);
+        positionMin = [
+          Number(sx.position_min ?? 0),
+          Number(sy.position_min ?? 0),
+          Number(sz.position_min ?? 0)
+        ];
 
-      positionMin = [
-        Number(sx.position_min ?? 0),
-        Number(sy.position_min ?? 0),
-        Number(sz.position_min ?? 0)
-      ];
+        positionMax = [
+          Number(sx.position_max ?? 100),
+          Number(sy.position_max ?? 100),
+          Number(sz.position_max ?? 50)
+        ];
 
-      positionMax = [
-        Number(sx.position_max ?? 100),
-        Number(sy.position_max ?? 100),
-        Number(sz.position_max ?? 50)
-      ];
+        configLoaded = true;
+        lastConfigRefresh = Date.now();
+      }
     } catch (e: any) {
       connected = false;
       homedAxes = [];
@@ -373,6 +389,9 @@
 
     try {
       await machineApi.jog(axis, dir * actualMove, jogSpeed);
+      const nextPosition: [number, number, number] = [...get(autocutMachineState).position];
+      nextPosition[i] = target;
+      autocutMachineState.setPosition(nextPosition);
       await refreshState();
     } catch (e: any) {
       lastError = e?.message ?? String(e);
@@ -405,6 +424,7 @@
 
   onMount(() => {
     uiSettings.load();
+    autocutMachineState.load();
     const initial = get(uiSettings);
     stepX = clampStep('X', initial.manualStepX);
     stepY = clampStep('Y', initial.manualStepY);
@@ -416,10 +436,14 @@
       developerMode = value.developerMode;
       endstopReleaseDelayMs = value.endstopReleaseDelayMs;
     });
+    const unsubscribeMachineState = autocutMachineState.subscribe((value) => {
+      homedAxes = value.homedAxes.split('');
+      pos = value.position;
+    });
 
-    void refreshState();
+    void refreshState(true);
     void refreshEndstops();
-    poll = setInterval(refreshState, 800);
+    poll = setInterval(() => void refreshState(false), 800);
     endstopPoll = setInterval(refreshEndstops, 200); // Poll endstops 5x per seconde (minder belasting)
 
     return () => {
@@ -429,6 +453,7 @@
         if (timer) clearTimeout(timer);
       });
       unsubscribe();
+      unsubscribeMachineState();
     };
   });
 </script>
@@ -610,7 +635,7 @@
 
   .jogGrid {
     display: grid;
-    grid-template-columns: 304px 96px 92px 160px;
+    grid-template-columns: 304px 96px 122px 130px;
     gap: 12px;
     align-items: stretch;
     margin-top: 12px;
@@ -786,7 +811,8 @@
 
   .stepVal {
     font-weight: 950;
-    font-size: 22px;
+    font-size: 21px;
+    white-space: nowrap;
   }
   .unit {
     opacity: 0.75;
@@ -856,12 +882,12 @@
     align-content: center;
     width: 100%;
     min-height: 100%;
-    padding: 16px;
+    padding: 12px;
     border-radius: 22px;
     background: linear-gradient(180deg, rgba(26, 46, 80, 0.92), rgba(18, 33, 60, 0.92));
     border: 2px solid rgba(124, 199, 255, 0.18);
     color: #eaf0ff;
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 900;
     cursor: pointer;
     user-select: none;
@@ -895,7 +921,7 @@
   }
 
   .torchButton small {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
     opacity: 0.85;
   }
@@ -917,6 +943,11 @@
     gap: 4px;
     align-content: center;
     min-height: 72px;
+  }
+
+  .positionBox.homed {
+    border-color: rgba(115, 240, 176, 0.42);
+    box-shadow: inset 0 0 0 1px rgba(115, 240, 176, 0.16);
   }
 
   .positionBoxHead {
@@ -1065,7 +1096,7 @@
         </div>
 
         <div class="positionStack">
-              <div class="positionBox">
+              <div class={`positionBox ${isAxisHomed("X") ? 'homed' : ''}`}>
                 <div class="positionBoxHead">
                   <span class="stepLabel">X</span>
                   <div class={`endstopIndicator ${endstopIndicators.x ? 'active' : ''}`} title="Endstop status"></div>
@@ -1075,7 +1106,7 @@
                   <div class="positionUnit">mm</div>
                 </div>
               </div>
-              <div class="positionBox">
+              <div class={`positionBox ${isAxisHomed("Y") ? 'homed' : ''}`}>
                 <div class="positionBoxHead">
                   <span class="stepLabel">Y</span>
                   <div class={`endstopIndicator ${endstopIndicators.y ? 'active' : ''}`} title="Endstop status"></div>
@@ -1085,7 +1116,7 @@
                   <div class="positionUnit">mm</div>
                 </div>
               </div>
-              <div class="positionBox">
+              <div class={`positionBox ${isAxisHomed("Z") ? 'homed' : ''}`}>
                 <div class="positionBoxHead">
                   <span class="stepLabel">Z</span>
                   <div class={`endstopIndicator ${endstopIndicators.z ? 'active' : ''}`} title="Endstop status"></div>

@@ -7,6 +7,7 @@
   import { DEFAULT_CUT_HEIGHT, MAX_CUT_HEIGHT, MIN_CUT_HEIGHT, clampCutHeight, DEFAULT_PIERCE_DELAY, DEFAULT_APPROACH_SPEED } from '$lib/cut-height';
   import { uiSettings } from '$lib/ui-settings';
   import NumberPad from '$lib/NumberPad.svelte';
+  import { autocutMachineState } from '$lib/autocut-machine-state';
 
   const XY_DEFAULT_MAX = 100; // fallback mm slag in X en Y
   const CIRCLE_SEGMENTS = 64; // smooth genoeg
@@ -64,6 +65,8 @@
   let configuredFields: string[] = [];
   let xTravel = XY_DEFAULT_MAX;
   let yTravel = XY_DEFAULT_MAX;
+  let configLoaded = false;
+  let lastConfigRefresh = 0;
 
   // Auto-scroll settings & panel refs
   let autoScroll = true;
@@ -116,8 +119,8 @@
     return Math.min(xTravel, yTravel);
   }
 
-  function isHomedXY() {
-    return homedAxes.includes("x") && homedAxes.includes("y");
+  function isHomedXYZ() {
+    return homedAxes.includes("x") && homedAxes.includes("y") && homedAxes.includes("z");
   }
 
   async function sendGcode(script: string) {
@@ -128,6 +131,7 @@
   async function emergencyStopMachine() {
     try {
       await machineApi.emergencyStop();
+      autocutMachineState.clear();
       emergencyStopState.activate();
     } catch (e: any) {
       setError(e?.message ?? String(e));
@@ -135,9 +139,10 @@
   }
 
   // --- Poll machine status ---
-  async function refreshMachine() {
+  async function refreshMachine(includeConfig = false) {
     try {
-      const r = await machineApi.getStatus(true);
+      const shouldLoadConfig = includeConfig || !configLoaded || Date.now() - lastConfigRefresh > 10000;
+      const r = await machineApi.getStatus(shouldLoadConfig);
       const st = r?.result?.status ?? {};
       const ps = st.print_stats?.state ?? "";
       const wh = st.webhooks?.state ?? "";
@@ -145,17 +150,22 @@
       const toolhead = st.toolhead ?? {};
       const cfg = st.configfile?.settings ?? {};
 
-      homedAxes = normalizeHomedAxes(toolhead.homed_axes);
+      const klipperHomedAxes = normalizeHomedAxes(toolhead.homed_axes);
+      if (klipperHomedAxes) autocutMachineState.mergeKlipper(klipperHomedAxes, null);
 
-      const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
-      const sy = cfg['carriage y'] ?? cfg['stepper_y'] ?? {};
-      const xMin = Number(sx.position_min ?? 0);
-      const xLimit = Number(sx.position_max ?? XY_DEFAULT_MAX);
-      const yMin = Number(sy.position_min ?? 0);
-      const yLimit = Number(sy.position_max ?? XY_DEFAULT_MAX);
-      xTravel = Math.max(0.1, xLimit - xMin);
-      yTravel = Math.max(0.1, yLimit - yMin);
-      normalizeAll();
+      if (shouldLoadConfig) {
+        const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
+        const sy = cfg['carriage y'] ?? cfg['stepper_y'] ?? {};
+        const xMin = Number(sx.position_min ?? 0);
+        const xLimit = Number(sx.position_max ?? XY_DEFAULT_MAX);
+        const yMin = Number(sy.position_min ?? 0);
+        const yLimit = Number(sy.position_max ?? XY_DEFAULT_MAX);
+        xTravel = Math.max(0.1, xLimit - xMin);
+        yTravel = Math.max(0.1, yLimit - yMin);
+        normalizeAll();
+        configLoaded = true;
+        lastConfigRefresh = Date.now();
+      }
 
       if (wh === "ready") {
         mrState = ps === "printing" ? "printing" : "ready";
@@ -404,12 +414,12 @@
   }
 
   function canPrepareCut() {
-    return selected !== null && hasConfiguredShape && mrState !== "error" && isHomedXY();
+    return selected !== null && hasConfiguredShape && mrState !== "error" && isHomedXYZ();
   }
 
   function idleStatusMessage() {
     if (!selected) return "Kies eerst een vorm om de snijflow te activeren.";
-    if (!isHomedXY()) return "Zorg dat de machine eerst volledig gehomed is.";
+    if (!isHomedXYZ()) return "Zorg dat X, Y en Z eerst gehomed zijn.";
     return "Controleer de preview en bereid de snijtaak voor.";
   }
 
@@ -458,17 +468,17 @@
   }
 
   function genRect(L: number, B: number) {
-    // X is breedte, Y is lengte. Teken gecentreerd rond de huidige positie.
+    // Teken de rechthoek met de lengte over X, dus liggend in de breedte.
     const halfL = L / 2;
     const halfB = B / 2;
 
     const lines = [
-      `G1 X${(-halfB).toFixed(3)} Y${(-halfL).toFixed(3)}`,
-      `G1 X${(B).toFixed(3)} Y0`,
-      `G1 X0 Y${(L).toFixed(3)}`,
-      `G1 X${(-B).toFixed(3)} Y0`,
-      `G1 X0 Y${(-L).toFixed(3)}`,
-      `G1 X${(halfB).toFixed(3)} Y${(halfL).toFixed(3)} ; back to center`
+      `G1 X${(-halfL).toFixed(3)} Y${(-halfB).toFixed(3)}`,
+      `G1 X${(L).toFixed(3)} Y0`,
+      `G1 X0 Y${(B).toFixed(3)}`,
+      `G1 X${(-L).toFixed(3)} Y0`,
+      `G1 X0 Y${(-B).toFixed(3)}`,
+      `G1 X${(halfL).toFixed(3)} Y${(halfB).toFixed(3)} ; back to center`
     ];
     return { lines, summary: `Rechthoek L=${fmt(L)} B=${fmt(B)}` };
   }
@@ -478,8 +488,8 @@
     // apothem a = S/2. circumradius R = a / cos(30) = (S/2)/0.8660254
     const a = S / 2;
     const R = a / 0.866025403784;
-    // 6 vertices at angles -90, -30, 30, 90, 150, 210 (deg)
-    const ang = [-90, -30, 30, 90, 150, 210].map((d) => (d * Math.PI) / 180);
+    // 6 vertices rotated 30deg so the hexagon has a flat bottom.
+    const ang = [-60, 0, 60, 120, 180, 240].map((d) => (d * Math.PI) / 180);
     const pts = ang.map((t) => ({ x: R * Math.cos(t), y: R * Math.sin(t) }));
 
     // Move to first vertex relative from center, then draw edges by delta between consecutive points, then back to center.
@@ -611,9 +621,9 @@
       return;
     }
 
-    if (!isHomedXY()) {
+    if (!isHomedXYZ()) {
       status = "error";
-      statusMsg = "Zorg dat de machine eerst volledig gehomed is.";
+      statusMsg = "Zorg dat X, Y en Z eerst gehomed zijn.";
       return;
     }
 
@@ -698,7 +708,7 @@
     const cy = VB / 2;
     const a = px / 2;
     const R = a / 0.866025403784; // circumradius
-    const ang = [-90, -30, 30, 90, 150, 210].map((d) => (d * Math.PI) / 180);
+    const ang = [-60, 0, 60, 120, 180, 240].map((d) => (d * Math.PI) / 180);
     return ang
       .map((t) => `${(cx + R * Math.cos(t)).toFixed(2)},${(cy + R * Math.sin(t)).toFixed(2)}`)
       .join(" ");
@@ -730,20 +740,25 @@
 
   onMount(() => {
     uiSettings.load();
+    autocutMachineState.load();
     loadShapeConfig();
     loadFeedRate();
     loadCutHeight();
     hasConfiguredShape = selected !== null;
-    void refreshMachine();
-    const poll = setInterval(refreshMachine, 1000);
+    void refreshMachine(true);
+    const poll = setInterval(() => void refreshMachine(false), 1000);
     const unsubscribe = uiSettings.subscribe((value) => {
       developerMode = value.developerMode;
       autoScroll = value.autoScroll ?? true;
+    });
+    const unsubscribeMachineState = autocutMachineState.subscribe((value) => {
+      homedAxes = value.homedAxes;
     });
 
     return () => {
       clearInterval(poll);
       unsubscribe();
+      unsubscribeMachineState();
     };
   });
 </script>
@@ -1186,7 +1201,7 @@
                   </svg>
                 {:else}
                   <svg width="60" height="60" viewBox="0 0 120 120">
-                    <polygon points="60,26 90,43 90,77 60,94 30,77 30,43" fill="none" stroke="#6aa7ff" stroke-width="6" />
+                    <polygon points="80,26 99,60 80,94 40,94 21,60 40,26" fill="none" stroke="#6aa7ff" stroke-width="6" />
                   </svg>
                 {/if}
               </div>

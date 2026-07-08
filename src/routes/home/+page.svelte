@@ -4,6 +4,7 @@
   import { emergencyStopState } from '$lib/emergency-stop-state';
   import { machineApi } from '$lib/machine-api';
   import { uiSettings } from '$lib/ui-settings';
+  import { autocutMachineState } from '$lib/autocut-machine-state';
 
   type PendingHome = 'X' | 'Y' | 'Z' | null;
 
@@ -18,6 +19,9 @@
   let showHomeConfirm = false;
   let homeInProgress = false;
   let pendingHome: PendingHome = null;
+  let activeHomeAxis: PendingHome = null;
+  let completedHomeAxis: PendingHome = null;
+  let limitsLoaded = false;
   let poll: ReturnType<typeof setInterval> | null = null;
   let endstopPoll: ReturnType<typeof setInterval> | null = null;
   
@@ -45,14 +49,22 @@
     return next as [number, number, number];
   }
 
+  function displayHomedAxes() {
+    return $autocutMachineState.homedAxes || homedAxes;
+  }
+
+  function displayPosition() {
+    return $autocutMachineState.position ?? position;
+  }
+
   function isAxisHomed(axis: 'X' | 'Y' | 'Z') {
-    return homedAxes.includes(axis.toLowerCase());
+    return displayHomedAxes().includes(axis.toLowerCase());
   }
 
   function axisValue(axis: 'X' | 'Y' | 'Z') {
     if (!isAxisHomed(axis)) return '--';
     const index = axis === 'X' ? 0 : axis === 'Y' ? 1 : 2;
-    return position[index].toFixed(1);
+    return displayPosition()[index].toFixed(1);
   }
 
   function isBadStatus() {
@@ -127,9 +139,10 @@
     return Math.min(max, Math.max(min, value));
   }
 
-  async function refreshMachine() {
+  async function refreshMachine(includeConfig = false) {
     try {
-      const r = await machineApi.getStatus(true);
+      const shouldLoadConfig = includeConfig || !limitsLoaded;
+      const r = await machineApi.getStatus(shouldLoadConfig);
       const st = r?.result?.status ?? {};
       const ps = st.print_stats?.state ?? '';
       const wh = st.webhooks?.state ?? '';
@@ -138,14 +151,19 @@
       const gcodeMove = st.gcode_move ?? {};
       const cfg = st.configfile?.settings ?? {};
 
-      homedAxes = normalizeHomedAxes(toolhead.homed_axes);
-      position = normalizePosition(toolhead.position) ?? normalizePosition(gcodeMove.gcode_position) ?? position;
+      const livePosition = normalizePosition(toolhead.position) ?? normalizePosition(gcodeMove.gcode_position);
+      const klipperHomedAxes = normalizeHomedAxes(toolhead.homed_axes);
+      if (klipperHomedAxes) autocutMachineState.mergeKlipper(klipperHomedAxes, livePosition);
+      if (livePosition && !homedAxes) position = livePosition;
 
-      const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
-      const sy = cfg['carriage y'] ?? cfg['stepper_y'] ?? {};
-      const sz = cfg['carriage z'] ?? cfg['stepper_z'] ?? {};
-      positionMin = [Number(sx.position_min ?? 0), Number(sy.position_min ?? 0), Number(sz.position_min ?? 0)];
-      positionMax = [Number(sx.position_max ?? 100), Number(sy.position_max ?? 100), Number(sz.position_max ?? 50)];
+      if (shouldLoadConfig) {
+        const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
+        const sy = cfg['carriage y'] ?? cfg['stepper_y'] ?? {};
+        const sz = cfg['carriage z'] ?? cfg['stepper_z'] ?? {};
+        positionMin = [Number(sx.position_min ?? 0), Number(sy.position_min ?? 0), Number(sz.position_min ?? 0)];
+        positionMax = [Number(sx.position_max ?? 100), Number(sy.position_max ?? 100), Number(sz.position_max ?? 50)];
+        limitsLoaded = true;
+      }
 
       if (wh === 'ready') {
         statusText = ps === 'printing' ? 'Busy' : 'Ready';
@@ -186,33 +204,71 @@
     }
   }
 
-  async function moveAfterHome(axis: 'X' | 'Y' | 'Z') {
+  function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function targetAfterHome(axis: 'X' | 'Y' | 'Z') {
     const index = axisIndex(axis);
 
     if (axis === 'Z') {
-      const travelHeight = clamp(get(uiSettings).travelHeightMm, positionMin[index], positionMax[index]);
-      await machineApi.moveAbsolute('Z', travelHeight, 4);
-      return;
+      return clamp(get(uiSettings).travelHeightMm, positionMin[index], positionMax[index]);
     }
 
-    const center = Math.round(((positionMin[index] + positionMax[index]) / 2) * 10) / 10;
-    await machineApi.moveAbsolute(axis, center, 6);
+    return Math.round(((positionMin[index] + positionMax[index]) / 2) * 10) / 10;
+  }
+
+  function homeScript(axis: 'X' | 'Y' | 'Z', target: number) {
+    const feedrate = axis === 'Z' ? 240 : 360;
+    return [`G28 ${axis}`, 'G90', `G0 ${axis}${target.toFixed(3)} F${feedrate}`].join('\n');
+  }
+
+  function homeWaitMs(axis: 'X' | 'Y' | 'Z', target: number) {
+    const index = axisIndex(axis);
+    const speed = axis === 'Z' ? 4 : 6;
+    const homingSpeed = axis === 'Z' ? 2 : 6;
+    const travel = Math.max(0, positionMax[index] - positionMin[index]);
+    const targetMove = Math.abs(target - positionMin[index]);
+    const minimum = Math.ceil((targetMove / speed) * 1000) + 1200;
+    const maximum = Math.ceil(((travel / homingSpeed) + (targetMove / speed)) * 1000) + 5000;
+    return { minimum: Math.max(1500, minimum), maximum: Math.max(5000, maximum) };
   }
 
   async function runHome(axis: 'X' | 'Y' | 'Z') {
+    if (homeInProgress) return;
+
     homeInProgress = true;
+    activeHomeAxis = axis;
+    completedHomeAxis = null;
+    pendingHome = null;
+    lastError = '';
 
     try {
-      await machineApi.home(axis);
-      await refreshMachine();
-      await moveAfterHome(axis);
-      await refreshMachine();
+      await refreshMachine(!limitsLoaded);
+      const target = targetAfterHome(axis);
+      const wait = homeWaitMs(axis, target);
+      let commandError: Error | null = null;
+      const command = machineApi.sendGcode(homeScript(axis, target)).catch((e: any) => {
+        commandError = e instanceof Error ? e : new Error(e?.message ?? String(e));
+      });
+
+      await Promise.race([
+        Promise.all([command, sleep(wait.minimum)]),
+        sleep(wait.maximum)
+      ]);
+
+      if (commandError) throw commandError;
+
+      const nextPosition: [number, number, number] = [...get(autocutMachineState).position];
+      nextPosition[axisIndex(axis)] = target;
+      autocutMachineState.markAxisHomed(axis, nextPosition);
       setEndstopIndicator(axis.toLowerCase() as 'x' | 'y' | 'z', true);
-      pendingHome = null;
-      showHomeConfirm = false;
+      completedHomeAxis = axis;
+      showHomeConfirm = true;
     } catch (e: any) {
       setError(e?.message ?? String(e));
     } finally {
+      if (activeHomeAxis === axis) activeHomeAxis = null;
       homeInProgress = false;
     }
   }
@@ -221,6 +277,7 @@
     try {
       lastError = '';
       await machineApi.restart();
+      autocutMachineState.clear();
       showAlarm = false;
       statusText = 'Restarting';
       statusMessage = 'Klipper wordt opnieuw gestart';
@@ -236,6 +293,7 @@
     try {
       lastError = '';
       await machineApi.firmwareRestart();
+      autocutMachineState.clear();
       emergencyStopState.clear();
       statusText = 'Restarting';
       statusMessage = 'Firmware restart wordt uitgevoerd';
@@ -250,6 +308,7 @@
   async function emergencyStopMachine() {
     try {
       await machineApi.emergencyStop();
+      autocutMachineState.clear();
       emergencyStopState.activate();
     } catch (e: any) {
       setError(e?.message ?? String(e));
@@ -258,23 +317,38 @@
       showHomeConfirm = false;
       homeInProgress = false;
       pendingHome = null;
+      activeHomeAxis = null;
+      completedHomeAxis = null;
       statusText = 'Emergency';
       statusMessage = 'Noodstop uitgevoerd. Voer Firmware restart uit door op de alarmmelding in de Home-pagina te klikken en hier Firmware restart te selecteren.';
     }
   }
 
   async function homeAxis(axis: 'X' | 'Y' | 'Z') {
+    if (homeInProgress) {
+      showHomeConfirm = true;
+      return;
+    }
+
     pendingHome = axis;
+    completedHomeAxis = null;
     showHomeConfirm = true;
   }
 
   function confirmPendingHome() {
+    if (completedHomeAxis) {
+      completedHomeAxis = null;
+      showHomeConfirm = false;
+      return;
+    }
+
     if (!pendingHome || homeInProgress) return;
     void runHome(pendingHome);
   }
 
   function homeConfirmText() {
-    if (homeInProgress) return `Home ${pendingHome} is bezig.\n\nDe noodstop blijft beschikbaar. Sluiten verbergt alleen deze melding; de beweging loopt door totdat Klipper klaar is.`;
+    if (completedHomeAxis) return `As ${completedHomeAxis} succesvol gehomed.`;
+    if (homeInProgress) return `Home ${activeHomeAxis ?? pendingHome ?? ''} is bezig.\n\nDe vaste noodstop rechtsboven blijft beschikbaar. Sluiten verbergt alleen deze melding; de beweging loopt door totdat Klipper klaar is.`;
 
     const axisLabel = pendingHome ? `Home ${pendingHome}` : 'Home';
     const extra = pendingHome === 'Z'
@@ -284,6 +358,12 @@
     return `${axisLabel} start direct beweging.\n\nHoud vingers vrij van bewegende delen en zorg dat de toorts volledig vrij kan bewegen.${extra}`;
   }
 
+  function homeDialogTitle() {
+    if (completedHomeAxis) return 'Homen klaar';
+    if (homeInProgress) return 'Homen bezig';
+    return 'Bevestig homen';
+  }
+
   function openAlarm() {
     if (!isBadStatus()) return;
     showAlarm = true;
@@ -291,13 +371,18 @@
 
   onMount(() => {
     uiSettings.load();
+    autocutMachineState.load();
     endstopReleaseDelayMs = get(uiSettings).endstopReleaseDelayMs;
     const unsubscribeSettings = uiSettings.subscribe((value) => {
       endstopReleaseDelayMs = value.endstopReleaseDelayMs;
     });
-    void refreshMachine();
+    const unsubscribeMachineState = autocutMachineState.subscribe((value) => {
+      homedAxes = value.homedAxes;
+      position = value.position;
+    });
+    void refreshMachine(true);
     void refreshEndstops();
-    poll = setInterval(refreshMachine, 1000);
+    poll = setInterval(() => void refreshMachine(false), 1000);
     endstopPoll = setInterval(refreshEndstops, 200); // Poll endstops 5x per seconde (minder belasting)
 
     return () => {
@@ -307,6 +392,7 @@
         if (timer) clearTimeout(timer);
       });
       unsubscribeSettings();
+      unsubscribeMachineState();
     };
   });
 </script>
@@ -422,6 +508,11 @@
     border-radius: 18px;
     background: rgba(11, 22, 39, 0.86);
     border: 1px solid rgba(124, 199, 255, 0.12);
+  }
+
+  .positionCard.homed {
+    border-color: rgba(115, 240, 176, 0.42);
+    box-shadow: inset 0 0 0 1px rgba(115, 240, 176, 0.16);
   }
 
   .homeCard {
@@ -650,7 +741,7 @@
 
   <section class="card positionWrap">
     <div class="positionGrid">
-      <div class="positionCard">
+      <div class={`positionCard ${isAxisHomed('X') ? 'homed' : ''}`}>
         <div class="positionCardHead">
           <div class="cardTitle">X</div>
           <div class={`endstopIndicator ${endstopIndicators.x ? 'active' : ''}`} title="Endstop X status"></div>
@@ -660,7 +751,7 @@
           <div class="unit">mm</div>
         </div>
       </div>
-      <div class="positionCard">
+      <div class={`positionCard ${isAxisHomed('Y') ? 'homed' : ''}`}>
         <div class="positionCardHead">
           <div class="cardTitle">Y</div>
           <div class={`endstopIndicator ${endstopIndicators.y ? 'active' : ''}`} title="Endstop Y status"></div>
@@ -670,7 +761,7 @@
           <div class="unit">mm</div>
         </div>
       </div>
-      <div class="positionCard">
+      <div class={`positionCard ${isAxisHomed('Z') ? 'homed' : ''}`}>
         <div class="positionCardHead">
           <div class="cardTitle">Z</div>
           <div class={`endstopIndicator ${endstopIndicators.z ? 'active' : ''}`} title="Endstop Z status"></div>
@@ -724,15 +815,16 @@
 {#if showHomeConfirm}
   <div class="modalBack homeModalBack">
     <div class="modal" role="dialog" aria-modal="true">
-      <h2 class="modalTitle">Bevestig homen</h2>
+      <h2 class="modalTitle">{homeDialogTitle()}</h2>
       <div class="modalText">{homeConfirmText()}</div>
       <div class="modalActions">
-        {#if !homeInProgress}
+        {#if completedHomeAxis}
+          <button on:click={confirmPendingHome}>Bevestiging</button>
+        {:else if !homeInProgress}
           <button class="secondary" on:click={() => { showHomeConfirm = false; pendingHome = null; }}>Annuleren</button>
           <button on:click={confirmPendingHome}>OK</button>
         {:else}
           <button class="secondary" on:click={() => (showHomeConfirm = false)}>Sluiten</button>
-          <button class="dangerButton" on:click={emergencyStopMachine}>Noodstop</button>
         {/if}
       </div>
     </div>

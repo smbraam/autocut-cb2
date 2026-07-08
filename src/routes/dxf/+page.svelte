@@ -173,7 +173,7 @@
 
 	async function refreshState() {
 		try {
-			const q = await machineApi.getStatus(true);
+			const q = await machineApi.getStatus(false);
 			const status = q?.result?.status ?? {};
 			const printState = status.print_stats?.state ?? '';
 			const webhookState = status.webhooks?.state ?? '';

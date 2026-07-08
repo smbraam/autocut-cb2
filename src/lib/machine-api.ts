@@ -22,13 +22,14 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 async function apiGet<T>(path: string) {
-  const response = await fetch(path);
+  const response = await fetch(path, { cache: 'no-store' });
   return parseResponse<T>(response);
 }
 
 async function apiPost<T>(path: string, body?: unknown) {
   const response = await fetch(path, {
     method: 'POST',
+    cache: 'no-store',
     headers: body instanceof FormData || !body ? undefined : { 'Content-Type': 'application/json' },
     body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined
   });

@@ -69,6 +69,12 @@
     font-size: var(--font-size-md);
     line-height: 1.45;
     overflow: hidden;
+    overscroll-behavior: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: pan-y;
+    cursor: none;
   }
 
   :global(button),
@@ -80,6 +86,21 @@
 
   :global(*) {
     box-sizing: border-box;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    cursor: none !important;
+  }
+
+  :global(*::-webkit-scrollbar) {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
+  :global(input),
+  :global(textarea) {
+    user-select: text;
+    -webkit-user-select: text;
   }
 
   :global(body) {
@@ -196,6 +217,10 @@
     max-width: none;
     margin: 0 auto;
     -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    touch-action: pan-y;
   }
 
   :global(.pageShell) {

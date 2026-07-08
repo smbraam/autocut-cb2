@@ -70,13 +70,13 @@
   }
 
   .numPadModal {
-    width: min(92vw, 720px);
+    width: min(92vw, 540px);
     max-height: calc(100dvh - 20px);
     overflow: auto;
     border-radius: 18px;
     border: 1px solid rgba(109, 146, 219, 0.28);
     background: linear-gradient(180deg, rgba(11, 19, 35, 0.99), rgba(7, 14, 26, 0.99));
-    padding: 12px;
+    padding: 10px;
     box-shadow: 0 24px 36px rgba(0, 0, 0, 0.36);
   }
 
@@ -95,21 +95,21 @@
   }
 
   .numPadClose {
-    min-height: 52px;
-    min-width: 104px;
+    min-height: 48px;
+    min-width: 92px;
     border-radius: 14px;
   }
 
   .numPadTopRow {
     display: grid;
-    grid-template-columns: minmax(190px, 0.55fr) minmax(0, 1fr);
+    grid-template-columns: minmax(150px, 0.5fr) minmax(0, 1fr);
     gap: 10px;
     align-items: stretch;
     margin-bottom: 10px;
   }
 
   .numPadValue {
-    min-height: 58px;
+    min-height: 50px;
     display: flex;
     align-items: center;
     justify-content: flex-end;
@@ -118,14 +118,14 @@
     border: 1px solid rgba(124, 199, 255, 0.18);
     background: rgba(7, 16, 30, 0.92);
     color: #ffffff;
-    font-size: 28px;
+    font-size: 24px;
     font-weight: 950;
     line-height: 1;
     text-align: right;
   }
 
   .numPadSubtitle {
-    min-height: 58px;
+    min-height: 50px;
     display: flex;
     align-items: center;
     padding: 8px 12px;
@@ -133,7 +133,7 @@
     border: 1px solid rgba(124, 199, 255, 0.1);
     background: rgba(10, 20, 36, 0.76);
     color: #aebfdf;
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 750;
     line-height: 1.25;
   }
@@ -152,14 +152,14 @@
   .numPadGrid {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 8px;
+    gap: 7px;
   }
 
   .numPadGrid button {
-    min-height: 58px;
+    min-height: 50px;
     border-radius: 14px;
     padding: 8px;
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 950;
   }
 
