@@ -439,6 +439,11 @@
     return required.length > 0 && required.every((field) => configuredFields.includes(field));
   }
 
+  function acceptCurrentShapeConfig(id: ShapeId | null = selected) {
+    configuredFields = requiredFieldsForShape(id);
+    hasConfiguredShape = configuredFields.length > 0;
+  }
+
   // --- Numpad modal ---
   let padOpen = false;
   let padTitle = "";
@@ -514,8 +519,7 @@
   // --- Navigation actions ---
   function openConfig(id: ShapeId) {
     selected = id;
-    configuredFields = [];
-    hasConfiguredShape = false;
+    acceptCurrentShapeConfig(id);
     status = "idle";
     statusMsg = "";
     preparedGcode = "";
@@ -913,7 +917,7 @@ ${e?.message ?? e}`);
     autocutMachineState.load();
     loadShapeConfig();
     loadCutProcess();
-    hasConfiguredShape = selected !== null;
+    acceptCurrentShapeConfig();
     void refreshMachine(true);
     const poll = setInterval(() => void refreshMachine(false), 1500);
     const unsubscribe = uiSettings.subscribe((value) => {
