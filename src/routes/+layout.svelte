@@ -238,7 +238,6 @@
     border-radius: var(--radius-md);
     padding: 14px;
     box-shadow: 0 16px 30px rgba(0, 0, 0, 0.16);
-    backdrop-filter: blur(8px);
   }
 
   :global(.surfaceCard.tight) {

@@ -58,6 +58,14 @@ function persist(state: AutoCutMachineState) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
+function samePosition(a: [number, number, number], b: [number, number, number]) {
+  return a.every((value, index) => Math.abs(value - b[index]) < 0.001);
+}
+
+function sameState(a: AutoCutMachineState, b: AutoCutMachineState) {
+  return a.homedAxes === b.homedAxes && samePosition(a.position, b.position);
+}
+
 function createAutoCutMachineState() {
   const store = writable<AutoCutMachineState>(defaultState);
 
@@ -80,9 +88,12 @@ function createAutoCutMachineState() {
         const mergedAxes = normalizeAxes(`${current.homedAxes}${axes}`);
         const merged: AutoCutMachineState = {
           homedAxes: mergedAxes,
-          position: nextPosition && !current.homedAxes ? nextPosition : current.position,
+          position: nextPosition ?? current.position,
           updatedAt: Date.now()
         };
+
+        if (sameState(current, merged)) return current;
+
         persist(merged);
         return merged;
       });
@@ -94,6 +105,9 @@ function createAutoCutMachineState() {
           position,
           updatedAt: Date.now()
         };
+
+        if (sameState(current, merged)) return current;
+
         persist(merged);
         return merged;
       });
@@ -105,6 +119,9 @@ function createAutoCutMachineState() {
           position,
           updatedAt: Date.now()
         };
+
+        if (sameState(current, merged)) return current;
+
         persist(merged);
         return merged;
       });

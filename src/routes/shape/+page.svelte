@@ -19,7 +19,7 @@
   const CIRCLE_SEGMENTS = 64; // smooth genoeg
 
   type ShapeId = "circle" | "slot" | "rect" | "hex";
-  type Status = "idle" | "ready" | "waiting" | "busy" | "success" | "error";
+  type Status = "idle" | "ready" | "busy" | "success" | "error";
 
   type ShapeOrientation = 'lengthX' | 'widthX';
   type CircleCfg = { diameter: number };
@@ -66,14 +66,15 @@
   let statusMsg = "";
   let preparedGcode = ""; // buffer
   let preparedSummary = "";
+  let showCutConfirm = false;
   let cutProcess: CutProcessSettings = defaultCutProcessSettings;
-  let developerMode = true;
   let hasConfiguredShape = false;
   let configuredFields: string[] = [];
   let xTravel = XY_DEFAULT_MAX;
   let yTravel = XY_DEFAULT_MAX;
   let configLoaded = false;
   let lastConfigRefresh = 0;
+  let machineRefreshInFlight = false;
 
   // Auto-scroll settings & panel refs
   let autoScroll = true;
@@ -85,6 +86,10 @@
   function doAutoScroll(el: HTMLElement | null) {
     if (!autoScroll || !el) return;
     setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
+  }
+
+  function pageHidden() {
+    return typeof document !== 'undefined' && document.hidden;
   }
 
   // --- Helpers ---
@@ -193,6 +198,9 @@
 
   // --- Poll machine status ---
   async function refreshMachine(includeConfig = false) {
+    if (machineRefreshInFlight || pageHidden()) return;
+
+    machineRefreshInFlight = true;
     try {
       const shouldLoadConfig = includeConfig || !configLoaded || Date.now() - lastConfigRefresh > 10000;
       const r = await machineApi.getStatus(shouldLoadConfig);
@@ -241,6 +249,8 @@
       machineState = 'Disconnected';
       mrMessage = "Moonraker not reachable";
       setError(e?.message ?? String(e));
+    } finally {
+      machineRefreshInFlight = false;
     }
   }
 
@@ -535,14 +545,10 @@
     }
   }
 
-  function canPrepareCut() {
-    return selected !== null && hasConfiguredShape && mrState !== "error" && isHomedXYZ();
-  }
-
   function idleStatusMessage() {
     if (!selected) return "Kies eerst een vorm om de snijflow te activeren.";
-    if (!isHomedXYZ()) return "Zorg dat X, Y en Z eerst gehomed zijn.";
-    return "Controleer de preview en bereid de snijtaak voor.";
+    if (!isHomedXYZ()) return "Druk op Snijden nadat X, Y en Z zijn gehomed.";
+    return "Controleer de preview en start de snijtaak.";
   }
 
   // --- G-code generation (XY only, relative for safety) ---
@@ -762,59 +768,63 @@
     return { gcode, summary: body.summary };
   }
 
-  // --- Flow: prepare then wait for physical START ---
-  async function prepareCut() {
-    lastError = "";
+  // --- Flow: direct cut with confirmation ---
+  function requestCut() {
+    lastError = '';
 
-    if (mrState === "error") {
-      status = "error";
-      statusMsg = "Machine in alarm. Los eerst op in Klipper/Mainsail.";
+    if (status === 'busy') {
+      statusMsg = 'Snijtaak is al bezig.';
+      return;
+    }
+
+    if (mrState === 'error') {
+      status = 'error';
+      statusMsg = 'Machine in alarm. Los eerst op in Klipper/Mainsail.';
+      doAutoScroll(cutPanel);
       return;
     }
 
     if (!isHomedXYZ()) {
-      status = "error";
-      statusMsg = "Zorg dat X, Y en Z eerst gehomed zijn.";
+      status = 'error';
+      statusMsg = 'Machine moet eerst volledig worden gehomed: X, Y en Z.';
+      doAutoScroll(cutPanel);
       return;
     }
 
-    const { gcode, summary } = buildGcodeForSelection();
-    preparedGcode = gcode;
-    preparedSummary = summary;
-
-    try {
-      await sendGcode('M117 Klaar om te snijden');
-    } catch {
-      // voorbereiding mag zichtbaar blijven zonder display-update
-    }
-
-    status = "waiting";
-    statusMsg = "Klaar om te snijden. Machine wacht op de fysieke triggerknop.";
-    doAutoScroll(cutPanel);
-  }
-
-  async function abortPreparedCut() {
-    resetPrepared();
-    try {
-      await sendGcode('M117 Voorbereiding afgebroken');
-    } catch {
-      // ignore display update failure
-    }
-  }
-
-  // This will be replaced later by GPIO trigger.
-  async function startCutNow() {
-    lastError = "";
-
-    if (!preparedGcode) {
-      status = "error";
-      statusMsg = "Geen G-code voorbereid.";
+    if (!selected || !hasConfiguredShape) {
+      status = 'error';
+      statusMsg = 'Kies eerst een vorm en vul de maat in.';
+      doAutoScroll(cutPanel);
       return;
     }
 
     try {
-      status = "busy";
-      statusMsg = "Bezig met snijden…";
+      const { gcode, summary } = buildGcodeForSelection();
+      preparedGcode = gcode;
+      preparedSummary = summary;
+      status = 'ready';
+      statusMsg = 'Controleer de machine en bevestig om te snijden.';
+      showCutConfirm = true;
+      doAutoScroll(cutPanel);
+    } catch (e: any) {
+      status = 'error';
+      statusMsg = e?.message ?? String(e);
+      setError(statusMsg);
+    }
+  }
+
+  function cancelCutConfirm() {
+    showCutConfirm = false;
+  }
+
+  async function confirmCut() {
+    if (!preparedGcode || status === 'busy') return;
+
+    showCutConfirm = false;
+
+    try {
+      status = 'busy';
+      statusMsg = 'Bezig met snijden...';
 
       try {
         await sendGcode('M117 Snijden bezig');
@@ -822,16 +832,16 @@
         // ignore display update failure
       }
 
-      // send as one script
       await sendGcode(preparedGcode);
 
-      status = "success";
-      statusMsg = "Snijden succesvol ✅";
+      status = 'success';
+      statusMsg = 'Snijden succesvol.';
     } catch (e: any) {
-      status = "error";
-      statusMsg = "Fout bij snijden";
+      status = 'error';
+      statusMsg = 'Fout bij snijden';
       setError(e?.message ?? String(e));
-      alert(`Fout bij snijden:\n${e?.message ?? e}`);
+      alert(`Fout bij snijden:
+${e?.message ?? e}`);
     }
   }
 
@@ -878,7 +888,6 @@
   function workflowPill() {
     if (status === "idle") return { txt: "Idle", cls: "pill idle" };
     if (status === "ready") return { txt: "Klaar", cls: "pill ready" };
-    if (status === "waiting") return { txt: "Wacht", cls: "pill waiting" };
     if (status === "busy") return { txt: "Bezig", cls: "pill busy" };
     if (status === "success") return { txt: "Succes", cls: "pill success" };
     return { txt: "Fout", cls: "pill error" };
@@ -906,9 +915,8 @@
     loadCutProcess();
     hasConfiguredShape = selected !== null;
     void refreshMachine(true);
-    const poll = setInterval(() => void refreshMachine(false), 1000);
+    const poll = setInterval(() => void refreshMachine(false), 1500);
     const unsubscribe = uiSettings.subscribe((value) => {
-      developerMode = value.developerMode;
       autoScroll = value.autoScroll ?? true;
     });
     const unsubscribeMachineState = autocutMachineState.subscribe((value) => {
@@ -995,7 +1003,6 @@
   }
   .pill.idle { color: #c6d3ff; }
   .pill.ready { color: #a9ffcf; border-color: #1f6a49; }
-  .pill.waiting { color: #a9ffcf; border-color: #1f6a49; }
   .pill.busy { color: #ffe2a8; border-color: #6a5320; }
   .pill.success { color: #a9ffcf; border-color: #1f6a49; }
   .pill.error { color: #ffb5b5; border-color: #7a1f1f; }
@@ -1308,6 +1315,50 @@
     width: 100%;
   }
 
+  .cutButton {
+    min-height: 64px;
+    font-size: 22px;
+  }
+
+  .modalBack {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: grid;
+    place-items: center;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.58);
+  }
+
+  .modal {
+    width: min(100%, 520px);
+    border-radius: 22px;
+    border: 1px solid rgba(109, 146, 219, 0.18);
+    background: linear-gradient(180deg, rgba(11, 19, 35, 0.98), rgba(7, 14, 26, 0.98));
+    padding: 18px;
+    box-shadow: 0 24px 36px rgba(0, 0, 0, 0.28);
+  }
+
+  .modalTitle {
+    margin: 0 0 10px;
+    font-size: 22px;
+    font-weight: 900;
+  }
+
+  .modalText {
+    color: #c9d8ee;
+    font-size: 17px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+
+  .modalActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 16px;
+  }
+
 
   @media (max-width: 760px) {
     .shapeGrid,
@@ -1315,6 +1366,7 @@
     .processGrid,
     .actionBar,
     .actionBar.three,
+    .modalActions,
     .singleFieldGrid { grid-template-columns: 1fr; }
     .sectionHead.withActions { grid-template-columns: 1fr; }
     .shapeGrid {
@@ -1803,29 +1855,36 @@
         </div>
       </div>
 
-      {#if preparedSummary}
+      {#if preparedSummary && status === "success"}
         <div class="helperBox" style="margin-top: 10px;">
-          <strong>Voorbereid</strong>
+          <strong>Laatst gesneden</strong>
           {preparedSummary}
         </div>
       {/if}
 
-      <div class="actionBar three" style="margin-top: 12px;">
-        <button class="primary" disabled={!canPrepareCut() || status === "busy"} on:click={prepareCut}>Snijden voorbereiden</button>
-        {#if status === "waiting"}
-          <button class="secondary" on:click={abortPreparedCut}>Afbreken</button>
-        {:else}
-          <div></div>
-        {/if}
-        {#if status === "waiting" && developerMode}
-          <button class="secondary" on:click={startCutNow}>START test</button>
-        {:else}
-          <div></div>
-        {/if}
+      <div class="actionBar" style="margin-top: 12px;">
+        <button class="primary cutButton" on:click={requestCut}>Snijden</button>
       </div>
     </div>
   </div>
 </div>
+
+{#if showCutConfirm}
+  <div class="modalBack">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h2 class="modalTitle">Snijden bevestigen</h2>
+      <div class="modalText">
+        Start snijden van {preparedSummary}.
+
+        Houd vingers vrij van bewegende delen. Controleer of de toorts vrij kan bewegen en de noodstop bereikbaar is.
+      </div>
+      <div class="modalActions">
+        <button class="secondary" on:click={cancelCutConfirm}>Annuleren</button>
+        <button class="primary" on:click={confirmCut}>Snijden</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <NumberPad
   open={padOpen}

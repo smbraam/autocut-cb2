@@ -2,16 +2,37 @@
   import { get } from 'svelte/store';
   import { onMount } from 'svelte';
   import { emergencyStopState } from '$lib/emergency-stop-state';
-  import { machineApi } from '$lib/machine-api';
+  import { machineApi, type ProcStatsResult } from '$lib/machine-api';
   import { uiSettings } from '$lib/ui-settings';
   import { autocutMachineState } from '$lib/autocut-machine-state';
 
   type PendingHome = 'X' | 'Y' | 'Z' | null;
+  type SystemStats = {
+    cpuPercent: number | null;
+    memoryUsedKb: number | null;
+    memoryTotalKb: number | null;
+    memoryPercent: number | null;
+    cpuTemp: number | null;
+    uptimeSeconds: number | null;
+    networkBandwidth: number | null;
+    moonrakerCpuPercent: number | null;
+  };
+
+  const emptySystemStats: SystemStats = {
+    cpuPercent: null,
+    memoryUsedKb: null,
+    memoryTotalKb: null,
+    memoryPercent: null,
+    cpuTemp: null,
+    uptimeSeconds: null,
+    networkBandwidth: null,
+    moonrakerCpuPercent: null
+  };
 
   let statusText = 'Connecting';
   let statusMessage = '';
   let homedAxes = '';
-  let position: [number, number, number] = [0, 0, 0];
+  let position: [number, number, number] | null = null;
   let positionMin: [number, number, number] = [0, 0, 0];
   let positionMax: [number, number, number] = [100, 100, 50];
   let lastError = '';
@@ -24,6 +45,11 @@
   let limitsLoaded = false;
   let poll: ReturnType<typeof setInterval> | null = null;
   let endstopPoll: ReturnType<typeof setInterval> | null = null;
+  let statsPoll: ReturnType<typeof setInterval> | null = null;
+  let machineRefreshInFlight = false;
+  let endstopRefreshInFlight = false;
+  let statsRefreshInFlight = false;
+  let systemStats: SystemStats = emptySystemStats;
   
   // Endstop status: null = unknown, 'open' = not triggered, 'TRIGGERED' = triggered
   let endstopStatus: Record<string, string> = {};
@@ -54,7 +80,7 @@
   }
 
   function displayPosition() {
-    return $autocutMachineState.position ?? position;
+    return position ?? $autocutMachineState.position;
   }
 
   function isAxisHomed(axis: 'X' | 'Y' | 'Z') {
@@ -62,7 +88,7 @@
   }
 
   function axisValue(axis: 'X' | 'Y' | 'Z') {
-    if (!isAxisHomed(axis)) return '--';
+    if (!isAxisHomed(axis) || !position) return '--';
     const index = axis === 'X' ? 0 : axis === 'Y' ? 1 : 2;
     return displayPosition()[index].toFixed(1);
   }
@@ -78,6 +104,84 @@
 
   function visibleAlarmMessage() {
     return lastError || statusMessage || 'Geen extra melding beschikbaar.';
+  }
+
+  function pageHidden() {
+    return typeof document !== 'undefined' && document.hidden;
+  }
+
+  function latestMoonrakerStat(stats: ProcStatsResult) {
+    const history = stats.moonraker_stats;
+    return Array.isArray(history) && history.length ? history[history.length - 1] : null;
+  }
+
+  function parseSystemStats(stats: ProcStatsResult | undefined): SystemStats {
+    if (!stats) return emptySystemStats;
+
+    const memory = stats.system_memory ?? {};
+    const memoryTotalKb = Number(memory.total);
+    const memoryUsedKb = Number(memory.used);
+    const hasMemory = Number.isFinite(memoryTotalKb) && Number.isFinite(memoryUsedKb) && memoryTotalKb > 0;
+    const network = stats.network ?? {};
+    const networkBandwidth = Object.entries(network)
+      .filter(([name]) => name !== 'lo')
+      .reduce((total, [, value]) => total + (Number(value?.bandwidth) || 0), 0);
+    const moonraker = latestMoonrakerStat(stats);
+    const cpuPercent = Number(stats.system_cpu_usage?.cpu);
+    const cpuTemp = Number(stats.cpu_temp);
+    const uptimeSeconds = Number(stats.system_uptime);
+    const moonrakerCpuPercent = Number(moonraker?.cpu_usage);
+
+    return {
+      cpuPercent: Number.isFinite(cpuPercent) ? cpuPercent : null,
+      memoryUsedKb: hasMemory ? memoryUsedKb : null,
+      memoryTotalKb: hasMemory ? memoryTotalKb : null,
+      memoryPercent: hasMemory ? (memoryUsedKb / memoryTotalKb) * 100 : null,
+      cpuTemp: Number.isFinite(cpuTemp) ? cpuTemp : null,
+      uptimeSeconds: Number.isFinite(uptimeSeconds) ? uptimeSeconds : null,
+      networkBandwidth: Number.isFinite(networkBandwidth) ? networkBandwidth : null,
+      moonrakerCpuPercent: Number.isFinite(moonrakerCpuPercent) ? moonrakerCpuPercent : null
+    };
+  }
+
+  function fmtPercent(value: number | null) {
+    return value === null ? '--' : `${Math.round(value)}%`;
+  }
+
+  function fmtMemoryKb(value: number | null) {
+    if (value === null) return '--';
+    const mb = value / 1024;
+    if (mb < 1024) return `${Math.round(mb)} MB`;
+    return `${(mb / 1024).toFixed(1)} GB`;
+  }
+
+  function fmtMemoryLine() {
+    if (systemStats.memoryUsedKb === null || systemStats.memoryTotalKb === null) return '--';
+    return `${fmtMemoryKb(systemStats.memoryUsedKb)} / ${fmtMemoryKb(systemStats.memoryTotalKb)}`;
+  }
+
+  function fmtTemp(value: number | null) {
+    return value === null ? '--' : `${value.toFixed(1)} °C`;
+  }
+
+  function fmtUptime(seconds: number | null) {
+    if (seconds === null) return '--';
+    const totalMinutes = Math.floor(seconds / 60);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours <= 0) return `${minutes} min`;
+    return `${hours}u ${minutes}m`;
+  }
+
+  function fmtBandwidth(bytesPerSecond: number | null) {
+    if (bytesPerSecond === null) return '--';
+    if (bytesPerSecond < 1024) return `${Math.round(bytesPerSecond)} B/s`;
+    if (bytesPerSecond < 1024 * 1024) return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
+    return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
+  }
+
+  function meterStyle(value: number | null) {
+    return `--fill: ${clamp(value ?? 0, 0, 100)}%`;
   }
 
   function canPollEndstops() {
@@ -140,6 +244,9 @@
   }
 
   async function refreshMachine(includeConfig = false) {
+    if (machineRefreshInFlight || pageHidden()) return;
+
+    machineRefreshInFlight = true;
     try {
       const shouldLoadConfig = includeConfig || !limitsLoaded;
       const r = await machineApi.getStatus(shouldLoadConfig);
@@ -153,8 +260,10 @@
 
       const livePosition = normalizePosition(toolhead.position) ?? normalizePosition(gcodeMove.gcode_position);
       const klipperHomedAxes = normalizeHomedAxes(toolhead.homed_axes);
-      if (klipperHomedAxes) autocutMachineState.mergeKlipper(klipperHomedAxes, livePosition);
-      if (livePosition && !homedAxes) position = livePosition;
+      if (livePosition) position = livePosition;
+      if (klipperHomedAxes || get(autocutMachineState).homedAxes) {
+        autocutMachineState.mergeKlipper(klipperHomedAxes, livePosition);
+      }
 
       if (shouldLoadConfig) {
         const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
@@ -182,12 +291,15 @@
       statusText = 'Disconnected';
       statusMessage = 'Moonraker niet bereikbaar';
       setError(e?.message ?? String(e));
+    } finally {
+      machineRefreshInFlight = false;
     }
   }
 
   async function refreshEndstops() {
-    if (!canPollEndstops()) return;
+    if (endstopRefreshInFlight || !canPollEndstops() || pageHidden()) return;
 
+    endstopRefreshInFlight = true;
     try {
       const response = await machineApi.queryEndstops();
       endstopStatus = response?.result ?? {};
@@ -201,6 +313,22 @@
         statusText = 'Shutdown';
         statusMessage = message;
       }
+    } finally {
+      endstopRefreshInFlight = false;
+    }
+  }
+
+  async function refreshSystemStats() {
+    if (statsRefreshInFlight || pageHidden()) return;
+
+    statsRefreshInFlight = true;
+    try {
+      const response = await machineApi.getProcStats();
+      systemStats = parseSystemStats(response?.result);
+    } catch {
+      systemStats = emptySystemStats;
+    } finally {
+      statsRefreshInFlight = false;
     }
   }
 
@@ -378,16 +506,19 @@
     });
     const unsubscribeMachineState = autocutMachineState.subscribe((value) => {
       homedAxes = value.homedAxes;
-      position = value.position;
+      if (!position && value.homedAxes) position = value.position;
     });
     void refreshMachine(true);
     void refreshEndstops();
-    poll = setInterval(() => void refreshMachine(false), 1000);
-    endstopPoll = setInterval(refreshEndstops, 200); // Poll endstops 5x per seconde (minder belasting)
+    void refreshSystemStats();
+    poll = setInterval(() => void refreshMachine(false), 500);
+    endstopPoll = setInterval(refreshEndstops, 500);
+    statsPoll = setInterval(refreshSystemStats, 2500);
 
     return () => {
       if (poll) clearInterval(poll);
       if (endstopPoll) clearInterval(endstopPoll);
+      if (statsPoll) clearInterval(statsPoll);
       Object.values(endstopFadeTimers).forEach(timer => {
         if (timer) clearTimeout(timer);
       });
@@ -641,6 +772,71 @@
     line-height: 1.35;
   }
 
+  .systemStatsBar {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+    padding: 10px;
+    border-radius: 18px;
+    border: 1px solid rgba(124, 199, 255, 0.12);
+    background: rgba(7, 15, 28, 0.9);
+  }
+
+  .statItem {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+    padding: 8px 10px;
+    border-radius: 14px;
+    background: rgba(13, 25, 45, 0.72);
+    border: 1px solid rgba(124, 199, 255, 0.08);
+  }
+
+  .statLabel {
+    color: #8fa3c7;
+    font-size: 13px;
+    font-weight: 900;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    line-height: 1;
+  }
+
+  .statValue {
+    color: #f3f7ff;
+    font-size: 18px;
+    font-weight: 950;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .statSub {
+    color: #8fa3c7;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .miniMeter {
+    height: 5px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(143, 163, 199, 0.18);
+  }
+
+  .miniMeter span {
+    display: block;
+    width: var(--fill, 0%);
+    height: 100%;
+    border-radius: inherit;
+    background: #6aa7ff;
+  }
+
   .modalBack {
     position: fixed;
     inset: 0;
@@ -702,6 +898,10 @@
 
     .modalActions {
       grid-template-columns: 1fr;
+    }
+
+    .systemStatsBar {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .topStopButton {
@@ -794,6 +994,35 @@
           <span class="sub">Vlak oppervlak vereist</span>
         </button>
       </div>
+    </div>
+  </section>
+
+  <section class="systemStatsBar" aria-label="Systeemstatistieken">
+    <div class="statItem">
+      <div class="statLabel">CPU</div>
+      <div class="statValue">{fmtPercent(systemStats.cpuPercent)}</div>
+      <div class="miniMeter" style={meterStyle(systemStats.cpuPercent)}><span></span></div>
+    </div>
+    <div class="statItem">
+      <div class="statLabel">RAM</div>
+      <div class="statValue">{fmtPercent(systemStats.memoryPercent)}</div>
+      <div class="statSub">{fmtMemoryLine()}</div>
+      <div class="miniMeter" style={meterStyle(systemStats.memoryPercent)}><span></span></div>
+    </div>
+    <div class="statItem">
+      <div class="statLabel">Temp</div>
+      <div class="statValue">{fmtTemp(systemStats.cpuTemp)}</div>
+      <div class="statSub">CPU</div>
+    </div>
+    <div class="statItem">
+      <div class="statLabel">Uptime</div>
+      <div class="statValue">{fmtUptime(systemStats.uptimeSeconds)}</div>
+      <div class="statSub">Systeem</div>
+    </div>
+    <div class="statItem">
+      <div class="statLabel">Moonraker</div>
+      <div class="statValue">{fmtPercent(systemStats.moonrakerCpuPercent)}</div>
+      <div class="statSub">Net {fmtBandwidth(systemStats.networkBandwidth)}</div>
     </div>
   </section>
 </div>

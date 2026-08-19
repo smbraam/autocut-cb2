@@ -48,6 +48,8 @@
 
   let poll: ReturnType<typeof setInterval> | null = null;
   let endstopPoll: ReturnType<typeof setInterval> | null = null;
+  let stateRefreshInFlight = false;
+  let endstopRefreshInFlight = false;
   
   // Endstop status indicators
   let endstopIndicators = { x: false, y: false, z: false };
@@ -146,6 +148,10 @@
     }, endstopReleaseDelayMs);
   }
 
+  function pageHidden() {
+    return typeof document !== 'undefined' && document.hidden;
+  }
+
   async function emergencyStopMachine() {
     try {
       await machineApi.emergencyStop();
@@ -159,6 +165,9 @@
   }
 
   async function refreshState(includeConfig = false) {
+    if (stateRefreshInFlight || pageHidden()) return;
+
+    stateRefreshInFlight = true;
     try {
       const shouldLoadConfig = includeConfig || !configLoaded || Date.now() - lastConfigRefresh > 10000;
       const q = await machineApi.getStatus(shouldLoadConfig);
@@ -215,12 +224,15 @@
       machineState = 'Disconnected';
       lastError = e?.message ?? String(e);
       console.error(lastError);
+    } finally {
+      stateRefreshInFlight = false;
     }
   }
 
   async function refreshEndstops() {
-    if (machineState !== 'Ready' && machineState !== 'Busy') return;
+    if (endstopRefreshInFlight || pageHidden() || (machineState !== 'Ready' && machineState !== 'Busy')) return;
 
+    endstopRefreshInFlight = true;
     try {
       const response = await machineApi.queryEndstops();
       const endstopStatus = response?.result ?? {};
@@ -234,6 +246,8 @@
         machineState = 'Shutdown';
         lastError = message;
       }
+    } finally {
+      endstopRefreshInFlight = false;
     }
   }
 
@@ -443,8 +457,8 @@
 
     void refreshState(true);
     void refreshEndstops();
-    poll = setInterval(() => void refreshState(false), 800);
-    endstopPoll = setInterval(refreshEndstops, 200); // Poll endstops 5x per seconde (minder belasting)
+    poll = setInterval(() => void refreshState(false), 1200);
+    endstopPoll = setInterval(refreshEndstops, 500);
 
     return () => {
       if (poll) clearInterval(poll);
@@ -891,7 +905,7 @@
     font-weight: 900;
     cursor: pointer;
     user-select: none;
-    transition: all 0.15s ease;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
   }
 
   .torchButton:hover:not(:disabled) {

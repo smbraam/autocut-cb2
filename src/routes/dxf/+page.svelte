@@ -19,6 +19,7 @@
 	let lastError = '';
 	let machineState = 'Connecting';
 	let poll: ReturnType<typeof setInterval> | null = null;
+	let stateRefreshInFlight = false;
 	let cutFeedRate = DEFAULT_CUT_FEED_RATE;
 	let cutHeight = DEFAULT_CUT_HEIGHT;
 
@@ -171,7 +172,14 @@
 		}
 	}
 
+	function pageHidden() {
+		return typeof document !== 'undefined' && document.hidden;
+	}
+
 	async function refreshState() {
+		if (stateRefreshInFlight || pageHidden()) return;
+
+		stateRefreshInFlight = true;
 		try {
 			const q = await machineApi.getStatus(false);
 			const status = q?.result?.status ?? {};
@@ -189,6 +197,8 @@
 			}
 		} catch {
 			machineState = 'Disconnected';
+		} finally {
+			stateRefreshInFlight = false;
 		}
 	}
 
@@ -268,7 +278,7 @@
 		loadCutFeedRate();
 		loadCutHeight();
 		void refreshState();
-		poll = setInterval(refreshState, 800);
+		poll = setInterval(refreshState, 1500);
 
 		return () => {
 			if (poll) clearInterval(poll);

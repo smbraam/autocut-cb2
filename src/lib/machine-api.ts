@@ -2,7 +2,18 @@ export type MachineStatusResult = {
   status?: Record<string, any>;
 };
 
+export type ProcStatsResult = {
+  moonraker_stats?: Array<{ time?: number; cpu_usage?: number; memory?: number; mem_units?: string }>;
+  cpu_temp?: number | null;
+  system_cpu_usage?: Record<string, number>;
+  system_memory?: { total?: number; used?: number; available?: number };
+  system_uptime?: number;
+  network?: Record<string, { bandwidth?: number; rx_drop?: number; tx_drop?: number }>;
+  websocket_connections?: number;
+};
+
 const MOONRAKER_PROXY_BASE = '/moonraker';
+const getInFlight = new Map<string, Promise<unknown>>();
 
 async function parseResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
@@ -22,8 +33,17 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 async function apiGet<T>(path: string) {
-  const response = await fetch(path, { cache: 'no-store' });
-  return parseResponse<T>(response);
+  const existing = getInFlight.get(path);
+  if (existing) return existing as Promise<T>;
+
+  const request = fetch(path, { cache: 'no-store' })
+    .then((response) => parseResponse<T>(response))
+    .finally(() => {
+      getInFlight.delete(path);
+    });
+
+  getInFlight.set(path, request);
+  return request;
 }
 
 async function apiPost<T>(path: string, body?: unknown) {
@@ -119,5 +139,8 @@ export const machineApi = {
   },
   queryEndstops() {
     return moonrakerGet<{ result?: Record<string, string> }>('/printer/query_endstops/status');
+  },
+  getProcStats() {
+    return moonrakerGet<{ result?: ProcStatsResult }>('/machine/proc_stats');
   }
 };

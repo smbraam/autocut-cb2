@@ -26,9 +26,15 @@ function sanitizeState(raw: Partial<EmergencyStopState> | null | undefined): Eme
   };
 }
 
+function sameState(a: EmergencyStopState, b: EmergencyStopState) {
+  return a.active === b.active && a.message === b.message && a.activatedAt === b.activatedAt;
+}
+
 function createEmergencyStopStore() {
   const store = writable<EmergencyStopState>(defaultState);
   let loaded = false;
+  let current = defaultState;
+  let lastPersisted = '';
 
   function load() {
     if (!browser || loaded) return;
@@ -36,7 +42,10 @@ function createEmergencyStopStore() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        store.set(sanitizeState(JSON.parse(raw)));
+        const next = sanitizeState(JSON.parse(raw));
+        current = next;
+        lastPersisted = JSON.stringify(next);
+        store.set(next);
       }
     } catch {
       store.set(defaultState);
@@ -46,8 +55,14 @@ function createEmergencyStopStore() {
   }
 
   store.subscribe((value) => {
+    current = value;
     if (!browser || !loaded) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+
+    const serialized = JSON.stringify(value);
+    if (serialized === lastPersisted) return;
+
+    localStorage.setItem(STORAGE_KEY, serialized);
+    lastPersisted = serialized;
   });
 
   return {
@@ -63,6 +78,7 @@ function createEmergencyStopStore() {
     },
     clear() {
       loaded = true;
+      if (sameState(current, defaultState)) return;
       store.set(defaultState);
     }
   };
