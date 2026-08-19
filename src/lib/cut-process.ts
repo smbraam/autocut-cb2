@@ -20,13 +20,13 @@ export const CUT_PROCESS_LIMITS = {
   curveFeedRate: { min: MIN_CUT_FEED_RATE, max: MAX_CUT_FEED_RATE },
   cutHeight: { min: MIN_CUT_HEIGHT, max: MAX_CUT_HEIGHT },
   contactOffset: { min: 0, max: 10 },
-  contactDownSpeed: { min: 10, max: 2000 },
-  contactLiftSpeed: { min: 10, max: 3000 },
+  contactDownSpeed: { min: 10, max: 600 },
+  contactLiftSpeed: { min: 10, max: 600 },
   torchLeadTime: { min: 0, max: 10 },
   contactSettleTime: { min: 0, max: 5 },
   pierceDelay: { min: 0, max: 10 },
   finishLiftHeight: { min: 0, max: 50 },
-  finishLiftSpeed: { min: 10, max: 3000 }
+  finishLiftSpeed: { min: 10, max: 600 }
 } satisfies Record<keyof CutProcessSettings, { min: number; max: number }>;
 
 export const defaultCutProcessSettings: CutProcessSettings = {
