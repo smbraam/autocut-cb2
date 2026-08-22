@@ -15,7 +15,9 @@
   import NumberPad from '$lib/NumberPad.svelte';
   import { autocutMachineState } from '$lib/autocut-machine-state';
 
-  const XY_DEFAULT_MAX = 100; // fallback mm slag in X en Y
+  const X_DEFAULT_MAX = 95; // fallback mm slag in X
+  const Y_DEFAULT_MAX = 100; // fallback mm slag in Y
+  const XY_DEFAULT_MAX = Math.min(X_DEFAULT_MAX, Y_DEFAULT_MAX); // fallback voor vierkante invoervelden
   const CIRCLE_SEGMENTS = 64; // smooth genoeg
 
   type ShapeId = "circle" | "slot" | "rect" | "hex";
@@ -70,8 +72,8 @@
   let cutProcess: CutProcessSettings = defaultCutProcessSettings;
   let hasConfiguredShape = false;
   let configuredFields: string[] = [];
-  let xTravel = XY_DEFAULT_MAX;
-  let yTravel = XY_DEFAULT_MAX;
+  let xTravel = X_DEFAULT_MAX;
+  let yTravel = Y_DEFAULT_MAX;
   let configLoaded = false;
   let lastConfigRefresh = 0;
   let machineRefreshInFlight = false;
@@ -135,6 +137,10 @@
 
   function xyFitMax() {
     return Math.min(xTravel, yTravel);
+  }
+
+  function hexAcrossFlatsMax() {
+    return Math.min(yMax(), xMax() * 0.866025403784);
   }
 
   function normalizeOrientation(value: unknown): ShapeOrientation {
@@ -218,9 +224,9 @@
         const sx = cfg['carriage x'] ?? cfg['stepper_x'] ?? {};
         const sy = cfg['carriage y'] ?? cfg['stepper_y'] ?? {};
         const xMin = Number(sx.position_min ?? 0);
-        const xLimit = Number(sx.position_max ?? XY_DEFAULT_MAX);
+        const xLimit = Number(sx.position_max ?? X_DEFAULT_MAX);
         const yMin = Number(sy.position_min ?? 0);
-        const yLimit = Number(sy.position_max ?? XY_DEFAULT_MAX);
+        const yLimit = Number(sy.position_max ?? Y_DEFAULT_MAX);
         xTravel = Math.max(0.1, xLimit - xMin);
         yTravel = Math.max(0.1, yLimit - yMin);
         normalizeAll();
@@ -288,7 +294,7 @@
   }
 
   function normalizeHex() {
-    hex = { acrossFlats: clamp(hex.acrossFlats, 0.1, xyFitMax()) };
+    hex = { acrossFlats: clamp(hex.acrossFlats, 0.1, hexAcrossFlatsMax()) };
   }
 
   function normalizeSlot() {
@@ -744,7 +750,7 @@
     pushSlotPoint(-straight / 2, -R, 'straight');
 
     for (let i = 1; i <= seg; i++) {
-      const t = (-90 + (180 * i) / seg) * (Math.PI / 180);
+      const t = (-90 - (180 * i) / seg) * (Math.PI / 180);
       pushSlotPoint(-straight / 2 + R * Math.cos(t), R * Math.sin(t), 'curve');
     }
 
@@ -1637,7 +1643,7 @@ ${e?.message ?? e}`);
                     title: "Steekmaat S (mm)",
                     value: hex.acrossFlats,
                     min: 0.1,
-                    max: xyFitMax(),
+                    max: hexAcrossFlatsMax(),
                     apply: (v) => {
                       hex = { acrossFlats: v };
                       normalizeHex();
