@@ -2,13 +2,20 @@
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import { emergencyStopState } from '$lib/emergency-stop-state';
-	import { DEFAULT_CUT_FEED_RATE, MAX_CUT_FEED_RATE, MIN_CUT_FEED_RATE, clampCutFeedRate } from '$lib/cut-speed';
-	import { DEFAULT_CUT_HEIGHT, MAX_CUT_HEIGHT, MIN_CUT_HEIGHT, clampCutHeight } from '$lib/cut-height';
+	import { DEFAULT_CUT_FEED_RATE, clampCutFeedRate } from '$lib/cut-speed';
+	import { DEFAULT_CUT_HEIGHT, clampCutHeight } from '$lib/cut-height';
+	import {
+		CUT_PROCESS_LIMITS,
+		defaultCutProcessSettings,
+		sanitizeCutProcessSettings,
+		type CutProcessSettings
+	} from '$lib/cut-process';
 	import { machineApi } from '$lib/machine-api';
-  import NumberPad from '$lib/NumberPad.svelte';
+	import NumberPad from '$lib/NumberPad.svelte';
 
 	const DXF_FEED_RATE_STORAGE_KEY = 'autocut-dxf-cut-feed-rate';
 	const DXF_CUT_HEIGHT_STORAGE_KEY = 'autocut-dxf-cut-height';
+	const DXF_CUT_PROCESS_STORAGE_KEY = 'autocut-dxf-cut-process';
 
 	let fileInput: HTMLInputElement | null = null;
 	let selectedFile: File | null = null;
@@ -20,137 +27,108 @@
 	let machineState = 'Connecting';
 	let poll: ReturnType<typeof setInterval> | null = null;
 	let stateRefreshInFlight = false;
-	let cutFeedRate = DEFAULT_CUT_FEED_RATE;
-	let cutHeight = DEFAULT_CUT_HEIGHT;
+	let cutProcess: CutProcessSettings = defaultCutProcessSettings;
 
-	let speedPadOpen = false;
-	let speedPadValue = '';
-	let speedPadError = '';
+	let padOpen = false;
+	let padTitle = '';
+	let padValue = '';
+	let padCurrent = 0;
+	let padMin = 0;
+	let padMax = 0;
+	let padUnit = '';
+	let padError = '';
+	let padKey: keyof CutProcessSettings | null = null;
 
-	let heightPadOpen = false;
-	let heightPadValue = '';
-	let heightPadError = '';
+	function fmtClean(value: number, decimals = 2) {
+		const factor = 10 ** decimals;
+		const rounded = Math.round(value * factor) / factor;
+		return rounded.toFixed(decimals).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+	}
 
-	function loadCutFeedRate() {
+	function loadCutProcess() {
 		if (!browser) return;
-		const stored = localStorage.getItem(DXF_FEED_RATE_STORAGE_KEY);
-		cutFeedRate = stored === null ? DEFAULT_CUT_FEED_RATE : clampCutFeedRate(Number(stored), DEFAULT_CUT_FEED_RATE);
+
+		const legacyFeed = localStorage.getItem(DXF_FEED_RATE_STORAGE_KEY);
+		const legacyHeight = localStorage.getItem(DXF_CUT_HEIGHT_STORAGE_KEY);
+		const legacy: Partial<CutProcessSettings> = {
+			straightFeedRate: legacyFeed === null ? DEFAULT_CUT_FEED_RATE : clampCutFeedRate(Number(legacyFeed), DEFAULT_CUT_FEED_RATE),
+			curveFeedRate: legacyFeed === null ? defaultCutProcessSettings.curveFeedRate : clampCutFeedRate(Number(legacyFeed), DEFAULT_CUT_FEED_RATE),
+			cutHeight: legacyHeight === null ? DEFAULT_CUT_HEIGHT : clampCutHeight(Number(legacyHeight), DEFAULT_CUT_HEIGHT)
+		};
+
+		try {
+			const raw = localStorage.getItem(DXF_CUT_PROCESS_STORAGE_KEY);
+			cutProcess = sanitizeCutProcessSettings(raw ? { ...legacy, ...JSON.parse(raw) } : legacy);
+		} catch {
+			cutProcess = sanitizeCutProcessSettings(legacy);
+		}
+
+		persistCutProcess();
 	}
 
-	function persistCutFeedRate() {
+	function persistCutProcess() {
 		if (!browser) return;
-		localStorage.setItem(DXF_FEED_RATE_STORAGE_KEY, String(cutFeedRate));
+		localStorage.setItem(DXF_CUT_PROCESS_STORAGE_KEY, JSON.stringify(cutProcess));
 	}
 
-	function loadCutHeight() {
-		if (!browser) return;
-		const stored = localStorage.getItem(DXF_CUT_HEIGHT_STORAGE_KEY);
-		cutHeight = stored === null ? DEFAULT_CUT_HEIGHT : clampCutHeight(Number(stored), DEFAULT_CUT_HEIGHT);
+	function setCutProcessValue(key: keyof CutProcessSettings, value: number) {
+		cutProcess = sanitizeCutProcessSettings({ ...cutProcess, [key]: value });
+		persistCutProcess();
 	}
 
-	function persistCutHeight() {
-		if (!browser) return;
-		localStorage.setItem(DXF_CUT_HEIGHT_STORAGE_KEY, String(cutHeight));
+	function openCutProcessPad(title: string, key: keyof CutProcessSettings, unit: string) {
+		const limits = CUT_PROCESS_LIMITS[key];
+		padTitle = title;
+		padKey = key;
+		padValue = '';
+		padCurrent = cutProcess[key];
+		padMin = limits.min;
+		padMax = limits.max;
+		padUnit = unit;
+		padError = '';
+		padOpen = true;
 	}
 
-	function setCutHeight(value: number) {
-		cutHeight = clampCutHeight(value, cutHeight);
-		persistCutHeight();
+	function closePad() {
+		padOpen = false;
+		padError = '';
+		padKey = null;
 	}
 
-	function setCutFeedRate(value: number) {
-		cutFeedRate = clampCutFeedRate(value, cutFeedRate);
-		persistCutFeedRate();
-	}
-
-	function openSpeedPad() {
-		speedPadValue = '';
-		speedPadError = '';
-		speedPadOpen = true;
-	}
-
-	function closeSpeedPad() {
-		speedPadOpen = false;
-		speedPadError = '';
-	}
-
-	function speedPadAppend(ch: string) {
-		if (ch === '.' && speedPadValue.includes('.')) return;
-		if (speedPadValue === '' && ch === '.') {
-			speedPadValue = '0.';
+	function padAppend(ch: string) {
+		if (ch === '.' && padValue.includes('.')) return;
+		if (padValue === '' && ch === '.') {
+			padValue = '0.';
 			return;
 		}
-		speedPadValue += ch;
+		padValue += ch;
 	}
 
-	function speedPadBackspace() {
-		speedPadValue = speedPadValue.slice(0, -1);
+	function padBackspace() {
+		padValue = padValue.slice(0, -1);
 	}
 
-	function speedPadClear() {
-		speedPadValue = '';
+	function padClear() {
+		padValue = '';
 	}
 
-	function confirmSpeedPad() {
-		const raw = speedPadValue.replace(',', '.').trim();
+	function confirmPad() {
+		if (!padKey) return;
+
+		const raw = padValue.replace(',', '.').trim();
 		if (!raw) {
-			speedPadError = 'Voer eerst een snijsnelheid in.';
+			padError = 'Voer eerst een waarde in.';
 			return;
 		}
 
 		const value = Number(raw);
 		if (!Number.isFinite(value)) {
-			speedPadError = 'Voer een geldig getal in.';
+			padError = 'Voer een geldig getal in.';
 			return;
 		}
 
-		setCutFeedRate(value);
-		closeSpeedPad();
-	}
-
-	function openHeightPad() {
-		heightPadValue = '';
-		heightPadError = '';
-		heightPadOpen = true;
-	}
-
-	function closeHeightPad() {
-		heightPadOpen = false;
-		heightPadError = '';
-	}
-
-	function heightPadAppend(ch: string) {
-		if (ch === '.' && heightPadValue.includes('.')) return;
-		if (heightPadValue === '' && ch === '.') {
-			heightPadValue = '0.';
-			return;
-		}
-		heightPadValue += ch;
-	}
-
-	function heightPadBackspace() {
-		heightPadValue = heightPadValue.slice(0, -1);
-	}
-
-	function heightPadClear() {
-		heightPadValue = '';
-	}
-
-	function confirmHeightPad() {
-		const raw = heightPadValue.replace(',', '.').trim();
-		if (!raw) {
-			heightPadError = 'Voer eerst een snijhoogte in.';
-			return;
-		}
-
-		const value = Number(raw);
-		if (!Number.isFinite(value)) {
-			heightPadError = 'Voer een geldig getal in.';
-			return;
-		}
-
-		setCutHeight(value);
-		closeHeightPad();
+		setCutProcessValue(padKey, value);
+		closePad();
 	}
 
 	function formatBytes(bytes: number) {
@@ -242,7 +220,7 @@
 		if (!selectedFile) return;
 
 		uploadState = 'uploading';
-		uploadMessage = 'Uploaden naar Moonraker…';
+		uploadMessage = 'Uploaden naar Moonraker...';
 		lastError = '';
 
 		try {
@@ -275,8 +253,7 @@
 	}
 
 	onMount(() => {
-		loadCutFeedRate();
-		loadCutHeight();
+		loadCutProcess();
 		void refreshState();
 		poll = setInterval(refreshState, 1500);
 
@@ -448,9 +425,9 @@
 		min-height: 168px;
 	}
 
-	.cutSetup {
+	.processGrid {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 10px;
 		align-items: stretch;
 	}
@@ -519,11 +496,8 @@
 			min-height: auto;
 		}
 
-		.fileGrid {
-			grid-template-columns: 1fr;
-		}
-
-		.cutSetup {
+		.fileGrid,
+		.processGrid {
 			grid-template-columns: 1fr;
 		}
 	}
@@ -579,21 +553,88 @@
 			</div>
 		</div>
 
-		<div class="cutSetup">
+		<div class="helperBox">
+			<strong>DXF snijparameters</strong>
+			Deze parameters worden apart voor DXF bewaard en gebruiken dezelfde grenzen als Vorm snijden.
+		</div>
+
+		<div class="processGrid">
 			<div class="field">
-				<div class="label">Snijsnelheid</div>
-				<button type="button" class="valueBox" on:click={openSpeedPad}>{cutFeedRate} mm/min</button>
+				<div class="label">Recht snijden</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Recht snijden (mm/min)', 'straightFeedRate', 'mm/min')}>
+					{cutProcess.straightFeedRate} mm/min
+				</button>
+			</div>
+
+			<div class="field">
+				<div class="label">Bochten</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Bochten (mm/min)', 'curveFeedRate', 'mm/min')}>
+					{cutProcess.curveFeedRate} mm/min
+				</button>
 			</div>
 
 			<div class="field">
 				<div class="label">Snijhoogte</div>
-				<button type="button" class="valueBox" on:click={openHeightPad}>{cutHeight.toFixed(1)} mm</button>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Snijhoogte (mm)', 'cutHeight', 'mm')}>
+					{fmtClean(cutProcess.cutHeight)} mm
+				</button>
 			</div>
-		</div>
 
-		<div class="helperBox" style="margin-bottom: 12px;">
-			<strong>DXF snij parameters</strong>
-			Snijsnelheid en snijhoogte worden gebruikt voor het DXF-snijproces. Deze waarden blijven apart bewaard per snijtype.
+			<div class="field">
+				<div class="label">Contact-offset</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Contact-offset (mm)', 'contactOffset', 'mm')}>
+					{fmtClean(cutProcess.contactOffset)} mm
+				</button>
+			</div>
+
+			<div class="field">
+				<div class="label">Z omlaag contact</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Z omlaag contact (mm/min)', 'contactDownSpeed', 'mm/min')}>
+					{cutProcess.contactDownSpeed} mm/min
+				</button>
+			</div>
+
+			<div class="field">
+				<div class="label">Z omhoog contact</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Z omhoog contact (mm/min)', 'contactLiftSpeed', 'mm/min')}>
+					{cutProcess.contactLiftSpeed} mm/min
+				</button>
+			</div>
+
+			<div class="field">
+				<div class="label">Voorlooptijd toorts</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Voorlooptijd toorts (s)', 'torchLeadTime', 's')}>
+					{fmtClean(cutProcess.torchLeadTime)} s
+				</button>
+			</div>
+
+			<div class="field">
+				<div class="label">Pauze na contact</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Pauze na contact (s)', 'contactSettleTime', 's')}>
+					{fmtClean(cutProcess.contactSettleTime)} s
+				</button>
+			</div>
+
+			<div class="field">
+				<div class="label">Pierce delay</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Pierce delay (s)', 'pierceDelay', 's')}>
+					{fmtClean(cutProcess.pierceDelay)} s
+				</button>
+			</div>
+
+			<div class="field">
+				<div class="label">Eind-lift hoogte</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Eind-lift hoogte (mm)', 'finishLiftHeight', 'mm')}>
+					{fmtClean(cutProcess.finishLiftHeight)} mm
+				</button>
+			</div>
+
+			<div class="field">
+				<div class="label">Eind-lift snelheid</div>
+				<button type="button" class="valueBox" on:click={() => openCutProcessPad('Eind-lift snelheid (mm/min)', 'finishLiftSpeed', 'mm/min')}>
+					{cutProcess.finishLiftSpeed} mm/min
+				</button>
+			</div>
 		</div>
 
 		<div class="previewBox">{previewLines.length ? previewLines.join('\n') : 'Preview van de eerste regels verschijnt hier na het laden van een DXF.'}</div>
@@ -601,27 +642,14 @@
 </div>
 
 <NumberPad
-	open={speedPadOpen}
-	title="Snijsnelheid (mm/min)"
-	value={speedPadValue}
-	subtitle={`Huidig: ${cutFeedRate} mm/min · Toegestaan: ${MIN_CUT_FEED_RATE} – ${MAX_CUT_FEED_RATE} mm/min`}
-	error={speedPadError}
-	onClose={closeSpeedPad}
-	onAppend={speedPadAppend}
-	onBackspace={speedPadBackspace}
-	onClear={speedPadClear}
-	onConfirm={confirmSpeedPad}
-/>
-
-<NumberPad
-	open={heightPadOpen}
-	title="Snijhoogte (mm)"
-	value={heightPadValue}
-	subtitle={`Huidig: ${cutHeight.toFixed(1)} mm · Toegestaan: ${MIN_CUT_HEIGHT} – ${MAX_CUT_HEIGHT} mm`}
-	error={heightPadError}
-	onClose={closeHeightPad}
-	onAppend={heightPadAppend}
-	onBackspace={heightPadBackspace}
-	onClear={heightPadClear}
-	onConfirm={confirmHeightPad}
+	open={padOpen}
+	title={padTitle}
+	value={padValue}
+	subtitle={`Huidig: ${fmtClean(padCurrent)} ${padUnit} · Toegestaan: ${fmtClean(padMin)} – ${fmtClean(padMax)} ${padUnit}`}
+	error={padError}
+	onClose={closePad}
+	onAppend={padAppend}
+	onBackspace={padBackspace}
+	onClear={padClear}
+	onConfirm={confirmPad}
 />

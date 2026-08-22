@@ -29,6 +29,8 @@
   let stepX = 10;
   let stepY = 10;
   let stepZ = 5;
+  let jogSpeedXY = 5;
+  let jogSpeedZ = 2;
   let developerMode = true;
   let devMacros: string[] = [];
   let configLoaded = false;
@@ -42,6 +44,9 @@
   let keypadCurrent = 0;
   let keypadMin = 0;
   let keypadMax = 0;
+  let keypadUnit = "mm";
+  let keypadMode: "step" | "speed" = "step";
+  let keypadSpeedGroup: "XY" | "Z" = "XY";
   let keypadError = "";
 
   let torchActive = false;
@@ -293,12 +298,40 @@
   }
 
   function openKeypad(axis: "X" | "Y" | "Z") {
+    keypadMode = "step";
     keypadAxis = axis;
     keypadTitle = `Stapgrootte ${axis} (mm)`;
     keypadValue = "";
     keypadCurrent = getAxisStep(axis);
     keypadMin = 0;
     keypadMax = maxReach(axis);
+    keypadUnit = "mm";
+    keypadError = "";
+    keypadOpen = true;
+  }
+
+  function setJogSpeed(group: "XY" | "Z", value: number) {
+    if (group === "XY") {
+      const safe = clamp(value, 0.5, 25);
+      jogSpeedXY = Math.round(safe * 10) / 10;
+      uiSettings.patch({ manualJogSpeedXY: jogSpeedXY });
+      return;
+    }
+
+    const safe = clamp(value, 0.5, 10);
+    jogSpeedZ = Math.round(safe * 10) / 10;
+    uiSettings.patch({ manualJogSpeedZ: jogSpeedZ });
+  }
+
+  function openSpeedKeypad(group: "XY" | "Z") {
+    keypadMode = "speed";
+    keypadSpeedGroup = group;
+    keypadTitle = group === "XY" ? "Snelheid XY (mm/s)" : "Snelheid Z (mm/s)";
+    keypadValue = "";
+    keypadCurrent = group === "XY" ? jogSpeedXY : jogSpeedZ;
+    keypadMin = 0.5;
+    keypadMax = group === "XY" ? 25 : 10;
+    keypadUnit = "mm/s";
     keypadError = "";
     keypadOpen = true;
   }
@@ -327,7 +360,11 @@
     }
 
     const v = clamp(n, keypadMin, keypadMax);
-    setAxisStep(keypadAxis, v);
+    if (keypadMode === "speed") {
+      setJogSpeed(keypadSpeedGroup, v);
+    } else {
+      setAxisStep(keypadAxis, v);
+    }
     closeKeypad();
   }
 
@@ -399,7 +436,7 @@
     const actualMove = Math.abs(target - current);
     if (actualMove <= 0) return;
 
-    const jogSpeed = axis === 'Z' ? 2 : 5;
+    const jogSpeed = axis === 'Z' ? jogSpeedZ : jogSpeedXY;
 
     try {
       await machineApi.jog(axis, dir * actualMove, jogSpeed);
@@ -443,12 +480,16 @@
     stepX = clampStep('X', initial.manualStepX);
     stepY = clampStep('Y', initial.manualStepY);
     stepZ = clampStep('Z', initial.manualStepZ);
+    jogSpeedXY = initial.manualJogSpeedXY;
+    jogSpeedZ = initial.manualJogSpeedZ;
     endstopReleaseDelayMs = initial.endstopReleaseDelayMs;
     developerMode = initial.developerMode;
 
     const unsubscribe = uiSettings.subscribe((value) => {
       developerMode = value.developerMode;
       endstopReleaseDelayMs = value.endstopReleaseDelayMs;
+      jogSpeedXY = value.manualJogSpeedXY;
+      jogSpeedZ = value.manualJogSpeedZ;
     });
     const unsubscribeMachineState = autocutMachineState.subscribe((value) => {
       homedAxes = value.homedAxes.split('');
@@ -767,6 +808,13 @@
     margin-top: 12px;
   }
 
+  .speedRow {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+
   .stepStack {
     display: grid;
     gap: 10px;
@@ -987,6 +1035,7 @@
     .jogGrid,
     .macroGrid,
     .stepRow,
+    .speedRow,
     .stepStack,
     .torchColumn,
     .positionStack {
@@ -1143,6 +1192,17 @@
         </div>
       </div>
 
+      <div class="speedRow">
+        <button type="button" class="stepBox compact" on:click={() => openSpeedKeypad("XY")}>
+          <span class="stepLabel">Snelheid XY</span>
+          <span class="stepVal">{toFixedNice(jogSpeedXY)} <span class="unit">mm/s</span></span>
+        </button>
+        <button type="button" class="stepBox compact" on:click={() => openSpeedKeypad("Z")}>
+          <span class="stepLabel">Snelheid Z</span>
+          <span class="stepVal">{toFixedNice(jogSpeedZ)} <span class="unit">mm/s</span></span>
+        </button>
+      </div>
+
       {#if lastError}
         <div class="errorBox">{lastError}</div>
       {/if}
@@ -1170,7 +1230,7 @@
   open={keypadOpen}
   title={keypadTitle}
   value={keypadValue}
-  subtitle={`Huidig: ${toFixedNice(keypadCurrent)} mm · Toegestaan: ${toFixedNice(keypadMin)} – ${toFixedNice(keypadMax)} mm`}
+  subtitle={`Huidig: ${toFixedNice(keypadCurrent)} ${keypadUnit} · Toegestaan: ${toFixedNice(keypadMin)} – ${toFixedNice(keypadMax)} ${keypadUnit}`}
   error={keypadError}
   onClose={closeKeypad}
   onAppend={appendKey}
