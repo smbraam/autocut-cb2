@@ -20,7 +20,7 @@
   const XY_DEFAULT_MAX = Math.min(X_DEFAULT_MAX, Y_DEFAULT_MAX); // fallback voor vierkante invoervelden
   const CIRCLE_SEGMENTS = 64; // smooth genoeg
 
-  type ShapeId = "circle" | "slot" | "rect" | "hex";
+  type ShapeId = "circle" | "slot" | "rect" | "hex" | "holes";
   type Status = "idle" | "ready" | "busy" | "success" | "error";
 
   type ShapeOrientation = 'lengthX' | 'widthX';
@@ -28,12 +28,15 @@
   type RectCfg = { length: number; width: number; orientation: ShapeOrientation; cornerRadiusEnabled: boolean; cornerRadius: number };
   type SlotCfg = { length: number; width: number; orientation: ShapeOrientation }; // radius = width/2
   type HexCfg = { acrossFlats: number }; // steekmaat / across flats
+  type HolePatternCfg = { diameter: number; columns: number; rows: number; spacingX: number; spacingY: number };
+  type Point = { x: number; y: number };
   type StoredShapeConfig = {
     selected?: ShapeId;
     circle?: Partial<CircleCfg>;
     rect?: Partial<RectCfg>;
     slot?: Partial<SlotCfg>;
     hex?: Partial<HexCfg>;
+    holes?: Partial<HolePatternCfg>;
   };
 
   const SHAPE_CONFIG_STORAGE_KEY = 'autocut-shape-config';
@@ -43,6 +46,7 @@
 
   const shapes: { id: ShapeId; title: string; subtitle: string }[] = [
     { id: "circle", title: "Cirkel", subtitle: "Ø diameter" },
+    { id: "holes", title: "Gatenpatroon", subtitle: "Ø, aantal en hartafstand" },
     { id: "slot", title: "Sleufgat", subtitle: "L, B (R=B/2)" },
     { id: "rect", title: "Rechthoek", subtitle: "L, B" },
     { id: "hex", title: "Zeskant", subtitle: "S (steekmaat)" }
@@ -55,6 +59,7 @@
   let rect: RectCfg = { length: 40, width: 20, orientation: 'lengthX', cornerRadiusEnabled: false, cornerRadius: 3 };
   let slot: SlotCfg = { length: 60, width: 12, orientation: 'lengthX' };
   let hex: HexCfg = { acrossFlats: 30 };
+  let holes: HolePatternCfg = { diameter: 6, columns: 3, rows: 2, spacingX: 20, spacingY: 20 };
 
   // Machine status from Moonraker
   let mrState = "connecting";
@@ -109,6 +114,12 @@
   function clamp(n: number, min: number, max: number) {
     if (Number.isNaN(n)) return min;
     return Math.min(max, Math.max(min, n));
+  }
+
+  function clampInt(n: number, min: number, max: number) {
+    const rounded = Math.round(Number(n));
+    if (!Number.isFinite(rounded)) return min;
+    return Math.trunc(clamp(rounded, min, max));
   }
 
   function fmt(n: number) {
@@ -181,6 +192,53 @@
 
   function slotYSize() {
     return slot.orientation === 'lengthX' ? slot.width : slot.length;
+  }
+
+  function holePatternColumnsMax(diameter = holes.diameter) {
+    return Math.max(1, Math.min(20, Math.floor(xMax() / Math.max(0.1, diameter))));
+  }
+
+  function holePatternRowsMax(diameter = holes.diameter) {
+    return Math.max(1, Math.min(20, Math.floor(yMax() / Math.max(0.1, diameter))));
+  }
+
+  function holePatternDiameterMax(columns = holes.columns, rows = holes.rows) {
+    return Math.max(0.1, Math.min(xMax() / Math.max(1, columns), yMax() / Math.max(1, rows)));
+  }
+
+  function holePatternSpacingXMax(columns = holes.columns, diameter = holes.diameter) {
+    if (columns <= 1) return xMax();
+    return Math.max(diameter, (xMax() - diameter) / (columns - 1));
+  }
+
+  function holePatternSpacingYMax(rows = holes.rows, diameter = holes.diameter) {
+    if (rows <= 1) return yMax();
+    return Math.max(diameter, (yMax() - diameter) / (rows - 1));
+  }
+
+  function holesXSize() {
+    return holes.diameter + Math.max(0, holes.columns - 1) * holes.spacingX;
+  }
+
+  function holesYSize() {
+    return holes.diameter + Math.max(0, holes.rows - 1) * holes.spacingY;
+  }
+
+  function holePatternPositions() {
+    const positions: Point[] = [];
+    const startX = -((holes.columns - 1) * holes.spacingX) / 2;
+    const startY = -((holes.rows - 1) * holes.spacingY) / 2;
+
+    for (let row = 0; row < holes.rows; row++) {
+      const columns = Array.from({ length: holes.columns }, (_, index) => index);
+      if (row % 2 === 1) columns.reverse();
+
+      for (const column of columns) {
+        positions.push({ x: startX + column * holes.spacingX, y: startY + row * holes.spacingY });
+      }
+    }
+
+    return positions;
   }
 
   function isHomedXYZ() {
@@ -306,11 +364,26 @@
     slot = { length: l, width: w, orientation };
   }
 
+  function normalizeHoles() {
+    let diameter = clamp(holes.diameter, 0.1, xyFitMax());
+    let columns = clampInt(holes.columns, 1, holePatternColumnsMax(diameter));
+    let rows = clampInt(holes.rows, 1, holePatternRowsMax(diameter));
+
+    diameter = clamp(diameter, 0.1, holePatternDiameterMax(columns, rows));
+    columns = clampInt(columns, 1, holePatternColumnsMax(diameter));
+    rows = clampInt(rows, 1, holePatternRowsMax(diameter));
+
+    const spacingX = columns > 1 ? clamp(holes.spacingX, diameter, holePatternSpacingXMax(columns, diameter)) : diameter;
+    const spacingY = rows > 1 ? clamp(holes.spacingY, diameter, holePatternSpacingYMax(rows, diameter)) : diameter;
+    holes = { diameter, columns, rows, spacingX, spacingY };
+  }
+
   function normalizeAll() {
     normalizeCircle();
     normalizeRect();
     normalizeHex();
     normalizeSlot();
+    normalizeHoles();
   }
   normalizeAll();
 
@@ -322,7 +395,8 @@
       circle,
       rect,
       slot,
-      hex
+      hex,
+      holes
     };
 
     localStorage.setItem(SHAPE_CONFIG_STORAGE_KEY, JSON.stringify(payload));
@@ -427,6 +501,13 @@
         orientation: normalizeOrientation(parsed.slot?.orientation ?? slot.orientation)
       };
       hex = { acrossFlats: Number(parsed.hex?.acrossFlats ?? hex.acrossFlats) || hex.acrossFlats };
+      holes = {
+        diameter: Number(parsed.holes?.diameter ?? holes.diameter) || holes.diameter,
+        columns: Number(parsed.holes?.columns ?? holes.columns) || holes.columns,
+        rows: Number(parsed.holes?.rows ?? holes.rows) || holes.rows,
+        spacingX: Number(parsed.holes?.spacingX ?? holes.spacingX) || holes.spacingX,
+        spacingY: Number(parsed.holes?.spacingY ?? holes.spacingY) || holes.spacingY
+      };
       normalizeAll();
     } catch {
       normalizeAll();
@@ -436,6 +517,7 @@
   function requiredFieldsForShape(id: ShapeId | null) {
     if (id === 'circle') return ['diameter'];
     if (id === 'hex') return ['acrossFlats'];
+    if (id === 'holes') return ['diameter', 'columns', 'rows', 'spacingX', 'spacingY'];
     if (id === 'rect' || id === 'slot') return ['length', 'width'];
     return [];
   }
@@ -563,8 +645,6 @@
 
   // --- G-code generation (XY only, relative for safety) ---
   type FeedKind = 'straight' | 'curve';
-  type Point = { x: number; y: number };
-
   function moveFeed(kind: FeedKind) {
     return kind === 'curve' ? cutProcess.curveFeedRate : cutProcess.straightFeedRate;
   }
@@ -759,6 +839,48 @@
     return { lines: moves, summary: `Sleufgat L=${fmt(L)} B=${fmt(B)} (R=${fmt(R)}, ${orientationLabel(slot.orientation)})` };
   }
 
+  function genHolePatternGcode() {
+    normalizeHoles();
+
+    const positions = holePatternPositions();
+    const total = positions.length;
+    const lines = [
+      ...gcodeHeader(),
+      '; AutoCut gatenpatroon',
+      'G91 ; relative XY travel'
+    ];
+    let currentCenter: Point = { x: 0, y: 0 };
+
+    positions.forEach((position, index) => {
+      const dx = position.x - currentCenter.x;
+      const dy = position.y - currentCenter.y;
+      if (Math.abs(dx) >= 0.0005 || Math.abs(dy) >= 0.0005) {
+        lines.push(g1xy(dx, dy, 'straight', `naar gat ${index + 1}/${total}`));
+      }
+
+      lines.push('G90 ; absolute Z for contact start');
+      lines.push(...gcodeContactStart());
+      lines.push(...genCircle(holes.diameter).lines);
+      lines.push('TORCH_OFF');
+      lines.push('M400');
+      lines.push(`G1 Z${cutProcess.finishLiftHeight.toFixed(3)} F${cutProcess.finishLiftSpeed} ; omhoog na gat`);
+      lines.push('G91 ; relative XY travel');
+      currentCenter = position;
+    });
+
+    if (Math.abs(currentCenter.x) >= 0.0005 || Math.abs(currentCenter.y) >= 0.0005) {
+      lines.push(g1xy(-currentCenter.x, -currentCenter.y, 'straight', 'terug naar patrooncentrum'));
+    }
+
+    lines.push('G90 ; back to absolute');
+    lines.push('; end');
+
+    return {
+      gcode: lines.join('\n'),
+      summary: `Gatenpatroon Ø=${fmt(holes.diameter)} · ${holes.columns}x${holes.rows} · HX=${fmt(holes.spacingX)} HY=${fmt(holes.spacingY)}`
+    };
+  }
+
   function buildGcodeForSelection() {
     normalizeAll();
     cutProcess = sanitizeCutProcessSettings(cutProcess);
@@ -766,6 +888,8 @@
     if (!selected) {
       throw new Error('Geen vorm geselecteerd.');
     }
+
+    if (selected === 'holes') return genHolePatternGcode();
 
     let body: { lines: string[]; summary: string };
 
@@ -883,6 +1007,20 @@ ${e?.message ?? e}`);
     return Math.min(box.w, box.h) / 2;
   }
 
+  function holePatternPreview() {
+    const width = holesXSize();
+    const height = holesYSize();
+    const box = fitPreview(width, height);
+    const scale = Math.min(box.w / Math.max(width, 0.1), box.h / Math.max(height, 0.1));
+    const r = Math.max(1.5, (holes.diameter / 2) * scale);
+    const circles = holePatternPositions().map((position) => ({
+      cx: box.cx + position.x * scale,
+      cy: box.cy + position.y * scale,
+      r
+    }));
+    return { circles };
+  }
+
   function hexPointsForPreview(S: number) {
     const px = 76;
     const cx = VB / 2;
@@ -908,6 +1046,7 @@ ${e?.message ?? e}`);
     if (selected === "slot") return "Sleufgat";
     if (selected === "rect") return "Rechthoek";
     if (selected === "hex") return "Zeskant";
+    if (selected === "holes") return "Gatenpatroon";
     return "";
   }
 
@@ -1122,7 +1261,7 @@ ${e?.message ?? e}`);
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
     min-height: 320px;
-    grid-auto-rows: minmax(0, 1fr);
+    grid-auto-rows: minmax(150px, 1fr);
   }
 
   .shapeMeta {
@@ -1431,9 +1570,16 @@ ${e?.message ?? e}`);
                   <svg width="60" height="60" viewBox="0 0 120 120">
                     <rect x="24" y="44" width="72" height="32" rx="16" ry="16" fill="none" stroke="#6aa7ff" stroke-width="6" />
                   </svg>
-                {:else}
+                {:else if s.id === "hex"}
                   <svg width="60" height="60" viewBox="0 0 120 120">
                     <polygon points="80,26 99,60 80,94 40,94 21,60 40,26" fill="none" stroke="#6aa7ff" stroke-width="6" />
+                  </svg>
+                {:else}
+                  <svg width="60" height="60" viewBox="0 0 120 120">
+                    <circle cx="42" cy="44" r="10" fill="none" stroke="#6aa7ff" stroke-width="6" />
+                    <circle cx="78" cy="44" r="10" fill="none" stroke="#6aa7ff" stroke-width="6" />
+                    <circle cx="42" cy="76" r="10" fill="none" stroke="#6aa7ff" stroke-width="6" />
+                    <circle cx="78" cy="76" r="10" fill="none" stroke="#6aa7ff" stroke-width="6" />
                   </svg>
                 {/if}
               </div>
@@ -1446,8 +1592,10 @@ ${e?.message ?? e}`);
                 Lengte en breedte
               {:else if s.id === "slot"}
                 Lengte, breedte en radius
-              {:else}
+              {:else if s.id === "hex"}
                 Steekmaat S
+              {:else}
+                Gaten in raster
               {/if}
             </div>
           </button>
@@ -1632,6 +1780,118 @@ ${e?.message ?? e}`);
                 {orientationLabel(slot.orientation)}
               </button>
             </div>
+          {:else if selected === "holes"}
+            <div class="field">
+              <div class="label">Diameter Ø (mm)</div>
+              <button
+                type="button"
+                class="valueBox"
+                on:click={() =>
+                  openNumpad({
+                    title: "Diameter Ø (mm)",
+                    value: holes.diameter,
+                    min: 0.1,
+                    max: holePatternDiameterMax(),
+                    apply: (v) => {
+                      holes = { ...holes, diameter: v };
+                      normalizeHoles();
+                      markShapeFieldConfigured('diameter');
+                    }
+                  })}
+              >
+                {holes.diameter.toFixed(1)} mm
+              </button>
+            </div>
+
+            <div class="field">
+              <div class="label">Aantal X</div>
+              <button
+                type="button"
+                class="valueBox"
+                on:click={() =>
+                  openNumpad({
+                    title: "Aantal X",
+                    value: holes.columns,
+                    min: 1,
+                    max: holePatternColumnsMax(),
+                    unit: 'st',
+                    apply: (v) => {
+                      holes = { ...holes, columns: clampInt(v, 1, holePatternColumnsMax()) };
+                      normalizeHoles();
+                      markShapeFieldConfigured('columns');
+                    }
+                  })}
+              >
+                {holes.columns} st
+              </button>
+            </div>
+
+            <div class="field">
+              <div class="label">Aantal Y</div>
+              <button
+                type="button"
+                class="valueBox"
+                on:click={() =>
+                  openNumpad({
+                    title: "Aantal Y",
+                    value: holes.rows,
+                    min: 1,
+                    max: holePatternRowsMax(),
+                    unit: 'st',
+                    apply: (v) => {
+                      holes = { ...holes, rows: clampInt(v, 1, holePatternRowsMax()) };
+                      normalizeHoles();
+                      markShapeFieldConfigured('rows');
+                    }
+                  })}
+              >
+                {holes.rows} st
+              </button>
+            </div>
+
+            <div class="field">
+              <div class="label">Hartafstand X (mm)</div>
+              <button
+                type="button"
+                class="valueBox"
+                on:click={() =>
+                  openNumpad({
+                    title: "Hartafstand X (mm)",
+                    value: holes.spacingX,
+                    min: holes.diameter,
+                    max: holePatternSpacingXMax(),
+                    apply: (v) => {
+                      holes = { ...holes, spacingX: v };
+                      normalizeHoles();
+                      markShapeFieldConfigured('spacingX');
+                    }
+                  })}
+              >
+                {holes.spacingX.toFixed(1)} mm
+              </button>
+            </div>
+
+            <div class="field">
+              <div class="label">Hartafstand Y (mm)</div>
+              <button
+                type="button"
+                class="valueBox"
+                on:click={() =>
+                  openNumpad({
+                    title: "Hartafstand Y (mm)",
+                    value: holes.spacingY,
+                    min: holes.diameter,
+                    max: holePatternSpacingYMax(),
+                    apply: (v) => {
+                      holes = { ...holes, spacingY: v };
+                      normalizeHoles();
+                      markShapeFieldConfigured('spacingY');
+                    }
+                  })}
+              >
+                {holes.spacingY.toFixed(1)} mm
+              </button>
+            </div>
           {:else}
             <div class="field">
               <div class="label">Steekmaat S (mm)</div>
@@ -1659,7 +1919,7 @@ ${e?.message ?? e}`);
       {:else}
         <div class="helperBox">
           <strong>Nog geen vorm gekozen</strong>
-          Kies eerst een van de vier vormen hierboven. Daarna verschijnen hier direct de juiste invoervelden.
+          Kies eerst een vorm hierboven. Daarna verschijnen hier direct de juiste invoervelden.
         </div>
       {/if}
 
@@ -1696,6 +1956,13 @@ ${e?.message ?? e}`);
             {@const box = fitPreview(slotXSize(), slotYSize())}
             <svg class="bigSvg" viewBox="0 0 120 120">
               <rect x={box.x} y={box.y} width={box.w} height={box.h} rx={slotPreviewRadius(box)} ry={slotPreviewRadius(box)} fill="none" stroke="#6aa7ff" stroke-width="5" />
+            </svg>
+          {:else if selected === "holes"}
+            {@const pattern = holePatternPreview()}
+            <svg class="bigSvg" viewBox="0 0 120 120">
+              {#each pattern.circles as hole}
+                <circle cx={hole.cx} cy={hole.cy} r={hole.r} fill="none" stroke="#6aa7ff" stroke-width="5" />
+              {/each}
             </svg>
           {:else}
             <svg class="bigSvg" viewBox="0 0 120 120">
